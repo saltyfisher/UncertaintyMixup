@@ -1,0 +1,18 @@
+# 忽略模型参数文件
+best_model*.pth
+
+# 忽略实验结果目录
+heatmaps/
+mixed_results/
+runs/
+
+# 忽略Python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+
+# 忽略IDE相关文件
+.vscode/
