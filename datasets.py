@@ -1,231 +1,314 @@
-"""数据集处理模块，包含各种数据集的加载和处理函数"""
-import os
+import cv2
+import numpy as np
 import torch
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
-from sklearn.model_selection import StratifiedShuffleSplit
+import random
+import torchvision
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from torch.utils.data import Dataset, Subset
+from PIL import Image
+import logging
+import os
+import random
+import torchvision
+import torch
+import pandas as pd
+import numpy as np
 
-def get_dataloaders(data_dir, batch_size=16, num_workers=4, dataset_type='chestct', magnification=None, test_split=0.2, random_state=42):
+from torchvision import transforms, datasets
+from torch.utils.data import DataLoader
+from operator import itemgetter
+from pathlib import Path
+from PIL import Image
+from torchvision.transforms import transforms
+from torchvision.transforms.autoaugment import RandAugment, TrivialAugmentWide
+from sklearn.model_selection import StratifiedShuffleSplit, train_test_split, StratifiedKFold
+
+def get_num_classes(dataset):
+    return {
+        'lymphoma':3,
+        'breakhis':8,
+        'lc25000':5,
+        'rect':2,
+        'chestct':4,
+        'EndoscopicBladder':4,
+        'corona':7,
+        'kvasir-dataset':8,
+        'PAD-UFES-20':6
+    }[dataset]
+
+class Mydata(torchvision.datasets.ImageFolder):
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if hasattr(self, 'groups'):
+            if index in self.groups:
+                sample = self.mfc_transform[0](sample)
+            else:
+                sample = self.transform(sample)
+        else:
+            if self.transform is not None:
+                sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target, path
+
+    def get_all_files(self):
+        data_list = [self.loader(path) for path, target in self.samples]
+        label_list = self.targets
+        return data_list, label_list
+    
+    def get_labels(self):
+        return self.labels
+    
+    def update_transform(self, mfc_transform, transform, groups):
+        self.mfc_transform = mfc_transform
+        self.transform = transform
+        self.groups = groups
+
+class Mydatasubset(Subset):
+    def __getitem__(self, index):
+        path, target = self.dataset.samples[self.indices[index]]
+        sample = self.dataset.loader(path)
+        if hasattr(self, 'groups'):
+            if index in self.groups:
+                sample = self.mfc_transform[0](sample)
+            else:
+                sample = self.transform(sample)
+        else:
+            if self.transform is not None:
+                sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target, path
+
+    def get_all_files(self):
+        data_list = [self.dataset.loader(self.dataset.samples[i][0]) for i in self.indices]
+        label_list = [self.dataset.targets[i] for i in self.indices]
+        return data_list, label_list
+    
+    def get_labels(self):
+        return [self.dataset.targets[i] for i in self.indices]
+    
+    def update_transform(self, mfc_transform, transform, groups):
+        self.mfc_transform = mfc_transform
+        self.transform = transform
+        self.groups = groups
+
+def split_train_val_dataset(traintest_dataset, train_transform, test_transform, validation_folds=5, random_state=42):
     """
-    获取训练和测试数据加载器
+    从训练集中划分验证集
     
     Args:
-        data_dir (str): 数据集根目录路径
-        batch_size (int): 批次大小
-        num_workers (int): 数据加载器的工作进程数
-        dataset_type (str): 数据集类型 ('chestct' 或 'breakhis')
-        magnification (str): BreakHis数据集的放大倍数 ('40X', '100X', '200X', '400X')，默认为None表示使用所有倍数
-        test_split (float): 测试集比例，默认为0.2
-        random_state (int): 随机种子，默认为42
-    
+        traintest_dataset: 原始训练集
+        train_transform: 训练集数据增强
+        test_transform: 测试集/验证集数据变换
+        validation_folds: 交叉验证折数，1表示简单划分，>1表示K折交叉验证
+        random_state: 随机种子
+        
     Returns:
-        tuple: (train_loader, test_loader)
+        tuple: (traintest_dataset, trainval_datasets, val_datasets) 
+               完整训练集，用于交叉验证的训练集列表和验证集列表
     """
-    # 根据数据集类型设置resize大小
+    # 获取训练集标签
+    traintest_labels = traintest_dataset.get_labels()
+    
+    skf = StratifiedKFold(n_splits=validation_folds, shuffle=True, random_state=random_state)
+    trainval_indices = list(range(len(traintest_dataset)))
+    trainval_splits = list(skf.split(trainval_indices, traintest_labels))
+    
+    # 返回多个(train, val)数据集对用于交叉验证
+    trainval_datasets = []
+    val_datasets = []
+    
+    for train_idx, val_idx in trainval_splits:
+        train_subset = Mydatasubset(traintest_dataset, train_idx)
+        val_subset = Mydatasubset(traintest_dataset, val_idx)
+        
+        train_subset.transform = train_transform
+        val_subset.transform = test_transform
+        
+        trainval_datasets.append(train_subset)
+        val_datasets.append(val_subset)
+        
+    return traintest_dataset, trainval_datasets, val_datasets
+
+def get_dataloaders(data_dir, 
+                    batch_size, 
+                    dataset_type,
+                    magnification,
+                    test_split=0.2,
+                    validation=False,
+                    validation_folds=5,
+                    random_state=42,
+                    resize=True):
+     
     if dataset_type == 'breakhis':
-        resize_size = (450, 450)
-    else:  # chestct
-        # resize_size = (320, 320)
+        resize_size = (448, 448)
+    elif 'kvasir-dataset' in dataset_type:
+        # Kvasir dataset usually contains images of size varying, resizing to 224 is common for classification
         resize_size = (224, 224)
-    
-    if dataset_type == 'chestct':
-        # 训练数据只做resize和ToTensor操作
-        train_transform = transforms.Compose([
-            transforms.Grayscale(num_output_channels=3),
-            transforms.Resize(resize_size),
-            transforms.ToTensor(),
-        ])
-        
-        # 测试数据也只做resize和ToTensor操作
-        test_transform = transforms.Compose([
-            transforms.Grayscale(num_output_channels=3),
-            transforms.Resize(resize_size),
-            transforms.ToTensor(),
-        ])
-    else:
+    else:  # chestct and others
+        resize_size = (224, 224)
+
+    if resize:
         train_transform = transforms.Compose([
             transforms.Resize(resize_size),
             transforms.ToTensor(),
         ])
         
-        # 测试数据也只做resize和ToTensor操作
         test_transform = transforms.Compose([
-            transforms.Resize(resize_size),
+                transforms.Resize(resize_size),
+                transforms.ToTensor(),
+            ])
+    else:
+        train_transform = transforms.Compose([
             transforms.ToTensor(),
         ])
-    
-    # 根据数据集类型加载数据
-    if dataset_type == 'breakhis':
-        train_loader, test_loader = _get_breakhis_dataloaders(
-            data_dir, batch_size, num_workers, train_transform, test_transform, magnification, test_split, random_state
-        )
-    else:
-        train_loader, test_loader = _get_chestct_dataloaders(
-            data_dir, batch_size, num_workers, train_transform, test_transform
-        )
-    
-    return train_loader, test_loader
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+        ])
 
-
-def _get_breakhis_dataloaders(data_dir, batch_size, num_workers, train_transform, test_transform, magnification=None, test_split=0.2, random_state=42):
-    """
-    获取BreakHis数据集的数据加载器
-    
-    Args:
-        data_dir (str): BreakHis数据集根目录路径
-        batch_size (int): 批次大小
-        num_workers (int): 数据加载器的工作进程数
-        train_transform: 训练数据预处理
-        test_transform: 测试数据预处理
-        magnification (str): 放大倍数 ('40X', '100X', '200X', '400X')，默认为None表示使用所有倍数
-        test_split (float): 测试集比例，默认为0.2
-        random_state (int): 随机种子，默认为42
-    
-    Returns:
-        tuple: (train_loader, test_loader)
-    """
-    # 新的BreakHis数据集结构: histology_slides/breast/[benign|malignant]/SOB/*/*/magnification
-    # 需要重新组织数据集结构，创建训练和测试目录
-    root_dir = os.path.join(data_dir, 'histology_slides', 'breast')
-    
-    # 定义类别映射
-    classes = {
-        'adenosis': os.path.join(root_dir, 'benign', 'SOB', 'adenosis'),
-        'fibroadenoma': os.path.join(root_dir, 'benign', 'SOB', 'fibroadenoma'),
-        'phyllodes_tumor': os.path.join(root_dir, 'benign', 'SOB', 'phyllodes_tumor'),
-        'tubular_adenoma': os.path.join(root_dir, 'benign', 'SOB', 'tubular_adenoma'),
-        'ductal_carcinoma': os.path.join(root_dir, 'malignant', 'SOB', 'ductal_carcinoma'),
-        'lobular_carcinoma': os.path.join(root_dir, 'malignant', 'SOB', 'lobular_carcinoma'),
-        'mucinous_carcinoma': os.path.join(root_dir, 'malignant', 'SOB', 'mucinous_carcinoma'),
-        'papillary_carcinoma': os.path.join(root_dir, 'malignant', 'SOB', 'papillary_carcinoma')
-    }
-    
-    # 创建临时目录结构用于ImageFolder
-    import tempfile
-    temp_dir = tempfile.mkdtemp()
-    dataset_dir = os.path.join(temp_dir, 'dataset')
-    os.makedirs(dataset_dir, exist_ok=True)
-    
-    # 为每个类别创建符号链接
-    for class_name, class_path in classes.items():
-        class_dir = os.path.join(dataset_dir, class_name)
-        os.makedirs(class_dir, exist_ok=True)
+    if 'EndoscopicBladder' in dataset_type:
+        # 加载 annotations.csv 文件
+        annotations_file = os.path.join(data_dir, 'annotations.csv')
+        df = pd.read_csv(annotations_file)
         
-        # 遍历该类别下的所有子目录和放大倍数
-        if os.path.exists(class_path):
-            sub_dirs = os.listdir(class_path)
-            for sub_dir in sub_dirs:
-                sub_dir_path = os.path.join(class_path, sub_dir)
-                if os.path.isdir(sub_dir_path):
-                    if magnification is not None:
-                        mag_dir = os.path.join(sub_dir_path, magnification)
-                        if os.path.exists(mag_dir):
-                            # 创建符号链接到训练目录（简化处理，实际应用中可能需要更复杂的训练/测试分割）
-                            try:
-                                os.symlink(mag_dir, os.path.join(class_dir, f"{sub_dir}_{magnification}"))
-                            except FileExistsError:
-                                pass
-                    else:
-                        # 链接所有放大倍数
-                        for mag in ['40X', '100X', '200X', '400X']:
-                            mag_dir = os.path.join(sub_dir_path, mag)
-                            if os.path.exists(mag_dir):
-                                try:
-                                    os.symlink(mag_dir, os.path.join(class_dir, f"{sub_dir}_{mag}"))
-                                except FileExistsError:
-                                    pass
-    
-    # 加载完整数据集
-    full_dataset = datasets.ImageFolder(root=dataset_dir, transform=train_transform)
-    
-    # 获取标签
-    labels = [sample[1] for sample in full_dataset.samples]
-    
-    # 使用StratifiedShuffleSplit进行分层抽样
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=test_split, random_state=random_state)
-    train_indices, test_indices = next(sss.split(range(len(full_dataset)), labels))
-    
-    # 创建训练集和测试集的子集
-    train_dataset = Subset(full_dataset, train_indices)
-    test_dataset = Subset(full_dataset, test_indices)
-    
-    # 为测试集设置不同的transform
-    # 注意：Subset不直接支持transform，我们需要为子集中的每个样本手动应用测试transform
-    # 这里我们创建一个包装类来处理不同的transform
-    class TransformSubset(torch.utils.data.Dataset):
-        def __init__(self, subset, transform):
-            self.subset = subset
-            self.transform = transform
+        # 创建类别到索引的映射
+        classes = sorted(df['tissue type'].unique())
+        class_to_idx = {cls: idx for idx, cls in enumerate(classes)}
+        
+        # 根据 annotation.csv 划分训练集、验证集和测试集
+        train_df = df[df['sub_dataset'] == 'train']
+        val_df = df[df['sub_dataset'] == 'val']
+        test_df = df[df['sub_dataset'] == 'test']
+        
+        # 创建自定义数据集
+        full_dataset = Mydata(root=data_dir, transform=train_transform)
+        
+        # 根据 annotations.csv 中的文件名创建索引映射
+        def create_index_mapping(dataset_df, class_to_idx):
+            """创建文件名到 (路径，标签) 的映射"""
+            mapping = {}
+            for _, row in dataset_df.iterrows():
+                filename = row.iloc[0]  # 第一列是文件名
+                tissue_type = row['tissue type']
+                class_idx = class_to_idx[tissue_type]
+                
+                # 构建完整的文件路径
+                file_path = os.path.join(data_dir, tissue_type, filename)
+                mapping[file_path] = (file_path, class_idx)
+            return mapping
+        
+        # 为每个数据集创建样本列表
+        train_mapping = create_index_mapping(train_df, class_to_idx)
+        val_mapping = create_index_mapping(val_df, class_to_idx)
+        test_mapping = create_index_mapping(test_df, class_to_idx)
+        
+        # 创建自定义的 Dataset 类来支持基于 annotation.csv 的加载
+        class AnnotationDataset(Dataset):
+            def __init__(self, root, file_mapping, transform=None):
+                self.root = root
+                self.file_mapping = file_mapping
+                self.samples = list(file_mapping.values())
+                self.targets = [sample[1] for sample in self.samples]
+                self.transform = transform
+                self.loader = lambda path: Image.open(path).convert('RGB')
             
-        def __getitem__(self, index):
-            x, y = self.subset[index]
-            # 检查x是否已经是Tensor，如果是则不需要再应用transform
-            if self.transform and not isinstance(x, torch.Tensor):
-                x = self.transform(x)
-            elif self.transform and isinstance(x, torch.Tensor):
-                # 如果x已经是Tensor，我们需要先将其转换回PIL Image再应用transform
-                from torchvision.transforms import ToPILImage
-                to_pil = ToPILImage()
-                x = to_pil(x)
-                x = self.transform(x)
-            return x, y
+            def __len__(self):
+                return len(self.samples)
+            
+            def __getitem__(self, index):
+                path, target = self.samples[index]
+                sample = self.loader(path)
+                if self.transform is not None:
+                    sample = self.transform(sample)
+                return sample, target, path
+            
+            def get_labels(self):
+                return self.targets
         
-        def __len__(self):
-            return len(self.subset)
+        traintest_dataset = AnnotationDataset(data_dir, train_mapping, train_transform)
+        test_dataset = AnnotationDataset(data_dir, test_mapping, test_transform)
+        val_dataset = AnnotationDataset(data_dir, val_mapping, test_transform)
+        
+        # 如果需要验证集，则使用 annotation.csv 中的 val 划分
+        if validation:         
+            return traintest_dataset, test_dataset, resize_size, train_transform, [traintest_dataset], [val_dataset]
+        else:
+            train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
+            return train_loader, test_loader, resize_size, train_transform, val_loader
+
+    if 'breakhis' in dataset_type:
+        root_dir = os.path.join(data_dir, magnification)
+        # 加载完整数据集
+        full_dataset = Mydata(root=root_dir, transform=train_transform)
+        
+        # 获取标签
+        labels = [sample[1] for sample in full_dataset.samples]
+
+        # 使用 StratifiedShuffleSplit 进行分层抽样
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=test_split)
+        train_indices, test_indices = next(sss.split(range(len(full_dataset)), labels))
+
+        # 创建训练集和测试集的子集
+        traintest_dataset = Mydatasubset(full_dataset, train_indices)
+        test_dataset = Mydatasubset(full_dataset, test_indices)
+
+        traintest_dataset.transform = train_transform
+        test_dataset.transform = test_transform
+        
+        # 如果需要验证集，则从训练集中进一步划分
+        if validation:         
+            trainval_datasets, val_datasets = split_train_val_dataset(
+                traintest_dataset, train_transform, test_transform, validation_folds, random_state
+            )
+            return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
+
+    if 'kvasir' in dataset_type:
+        # 假设数据目录结构为 data_dir/kvasir-dataset/class_name/image.jpg
+        root_dir = os.path.join(data_dir, 'kvasir-dataset')
+        full_dataset = Mydata(root=root_dir, transform=train_transform)
+        
+        # 获取标签
+        labels = [sample[1] for sample in full_dataset.samples]
+
+        # 使用 StratifiedShuffleSplit 进行分层抽样
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=test_split, random_state=random_state)
+        train_indices, test_indices = next(sss.split(range(len(full_dataset)), labels))
+
+        # 创建训练集和测试集的子集
+        traintest_dataset = Mydatasubset(full_dataset, train_indices)
+        test_dataset = Mydatasubset(full_dataset, test_indices)
+
+        traintest_dataset.transform = train_transform
+        test_dataset.transform = test_transform
+        
+        # 如果需要验证集，则从训练集中进一步划分
+        if validation:         
+            full_traintest_dataset, trainval_datasets, val_datasets = split_train_val_dataset(
+                traintest_dataset, train_transform, test_transform, validation_folds, random_state
+            )
+            return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
+
+    if 'chestct' in dataset_type:
+        data, label = [], []
+        all_folders = Path(data_dir).joinpath('train')
+        traintest_dataset = Mydata(str(all_folders), transform=train_transform)
+        all_folders = Path(data_dir).joinpath('test')
+        test_dataset = Mydata(str(all_folders), transform=test_transform)
+        
+        # 如果需要验证集，则从训练集中进一步划分
+        if validation:
+            full_traintest_dataset, trainval_datasets, val_datasets = split_train_val_dataset(
+                traintest_dataset, train_transform, test_transform, validation_folds, random_state
+            )
+            return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
     
-    # 应用不同的transform
-    train_dataset = TransformSubset(train_dataset, train_transform)
-    test_dataset = TransformSubset(test_dataset, test_transform)
-    
-    print(f"BreakHis dataset loaded with {len(train_dataset)} training samples and {len(test_dataset)} test samples")
-    print(f"Classes: {full_dataset.classes}")
-    
-    # 创建数据加载器
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    
+    train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
     return train_loader, test_loader
-
-
-def _get_chestct_dataloaders(data_dir, batch_size, num_workers, train_transform, test_transform):
-    """
-    获取ChestCT数据集的数据加载器
-    
-    Args:
-        data_dir (str): ChestCT数据集根目录路径
-        batch_size (int): 批次大小
-        num_workers (int): 数据加载器的工作进程数
-        train_transform: 训练数据预处理
-        test_transform: 测试数据预处理
-    
-    Returns:
-        tuple: (train_loader, test_loader)
-    """
-    # 原有的数据集加载方式
-    train_dataset = datasets.ImageFolder(root=os.path.join(data_dir, 'train'), transform=train_transform)
-    test_dataset = datasets.ImageFolder(root=os.path.join(data_dir, 'test'), transform=test_transform)
-    
-    # 创建数据加载器
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    
-    return train_loader, test_loader
-
-
-def get_num_classes(dataset_type):
-    """
-    获取数据集的类别数
-    
-    Args:
-        dataset_type (str): 数据集类型 ('chestct' 或 'breakhis')
-    
-    Returns:
-        int: 类别数
-    """
-    if dataset_type == 'breakhis':
-        # BreakHis有8个类别
-        return 8
-    else:
-        # ChestCT有4个类别
-        return 4

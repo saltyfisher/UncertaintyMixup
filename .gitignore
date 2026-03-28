@@ -1,16 +1,23 @@
 # 忽略模型参数文件
 best_model*.pth
+*.pth
+*.tar
 
 # 忽略实验结果目录
 heatmaps/
 mixed_results/
+results/
 runs/
+training_log/
+vis/
+vis_results/
 
 # 忽略Python缓存
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
 .Python
 .pytest_cache/
 
