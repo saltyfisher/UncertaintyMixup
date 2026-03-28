@@ -31,10 +31,10 @@ def get_num_classes(dataset):
         'lc25000':5,
         'rect':2,
         'chestct':4,
-        'EndoscopicBladder':4,
+        'bladder':4,
         'corona':7,
-        'kvasir-dataset':8,
-        'PAD-UFES-20':6
+        'kvasir':8,
+        'padufes':6
     }[dataset]
 
 class Mydata(torchvision.datasets.ImageFolder):
@@ -171,7 +171,7 @@ def get_dataloaders(data_dir,
             transforms.ToTensor(),
         ])
 
-    if 'EndoscopicBladder' in dataset_type:
+    if 'bladder' in dataset_type:
         # 加载 annotations.csv 文件
         annotations_file = os.path.join(data_dir, 'annotations.csv')
         df = pd.read_csv(annotations_file)
@@ -180,7 +180,7 @@ def get_dataloaders(data_dir,
         classes = sorted(df['tissue type'].unique())
         class_to_idx = {cls: idx for idx, cls in enumerate(classes)}
         
-        # 根据 annotation.csv 划分训练集、验证集和测试集
+        # 根据 annotations.csv 划分训练集、验证集和测试集
         train_df = df[df['sub_dataset'] == 'train']
         val_df = df[df['sub_dataset'] == 'val']
         test_df = df[df['sub_dataset'] == 'test']
@@ -190,7 +190,7 @@ def get_dataloaders(data_dir,
         
         # 根据 annotations.csv 中的文件名创建索引映射
         def create_index_mapping(dataset_df, class_to_idx):
-            """创建文件名到 (路径，标签) 的映射"""
+            """创建文件名到 (路径，标签) 的映射，并检查文件是否存在"""
             mapping = {}
             for _, row in dataset_df.iterrows():
                 filename = row.iloc[0]  # 第一列是文件名
@@ -199,7 +199,12 @@ def get_dataloaders(data_dir,
                 
                 # 构建完整的文件路径
                 file_path = os.path.join(data_dir, tissue_type, filename)
-                mapping[file_path] = (file_path, class_idx)
+                
+                # 检查文件是否实际存在于目录中
+                if os.path.exists(file_path):
+                    mapping[file_path] = (file_path, class_idx)
+                else:
+                    logging.warning(f"File not found: {file_path}")
             return mapping
         
         # 为每个数据集创建样本列表
@@ -234,14 +239,14 @@ def get_dataloaders(data_dir,
         test_dataset = AnnotationDataset(data_dir, test_mapping, test_transform)
         val_dataset = AnnotationDataset(data_dir, val_mapping, test_transform)
         
+        train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
         # 如果需要验证集，则使用 annotation.csv 中的 val 划分
         if validation:         
-            return traintest_dataset, test_dataset, resize_size, train_transform, [traintest_dataset], [val_dataset]
-        else:
-            train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
-            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
-            val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
-            return train_loader, test_loader, resize_size, train_transform, val_loader
+            return train_loader, test_loader, val_loader
+        else:    
+            return train_loader, test_loader
 
     if 'breakhis' in dataset_type:
         root_dir = os.path.join(data_dir, magnification)
@@ -271,7 +276,7 @@ def get_dataloaders(data_dir,
 
     if 'kvasir' in dataset_type:
         # 假设数据目录结构为 data_dir/kvasir-dataset/class_name/image.jpg
-        root_dir = os.path.join(data_dir, 'kvasir-dataset')
+        root_dir = data_dir
         full_dataset = Mydata(root=root_dir, transform=train_transform)
         
         # 获取标签
@@ -287,13 +292,7 @@ def get_dataloaders(data_dir,
 
         traintest_dataset.transform = train_transform
         test_dataset.transform = test_transform
-        
-        # 如果需要验证集，则从训练集中进一步划分
-        if validation:         
-            full_traintest_dataset, trainval_datasets, val_datasets = split_train_val_dataset(
-                traintest_dataset, train_transform, test_transform, validation_folds, random_state
-            )
-            return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
+
 
     if 'chestct' in dataset_type:
         data, label = [], []

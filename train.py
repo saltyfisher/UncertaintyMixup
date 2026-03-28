@@ -354,7 +354,7 @@ def train_model(args, model, train_loader, test_loader, criterion, optimizer, nu
             all_predictions = []
             all_labels = []
             
-            for batch_idx, (images, labels) in enumerate(train_loader):
+            for batch_idx, (images, labels, path) in enumerate(train_loader):
                 images = images.to(device)
                 labels = labels.to(device)
                 if save_dir is not None:
@@ -384,8 +384,6 @@ def train_model(args, model, train_loader, test_loader, criterion, optimizer, nu
             train_precision = precision_score(all_labels, all_predictions, average='weighted', zero_division=0)
             train_recall = recall_score(all_labels, all_predictions, average='weighted', zero_division=0)
             train_f1 = f1_score(all_labels, all_predictions, average='weighted', zero_division=0)
-            
-            print(f'Epoch [{epoch+1}/{num_epochs}] - Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}')
         # 只在需要保存混合结果的epoch进行测试
         if ((epoch + 1) % 1 == 0 or epoch == 0 or epoch == num_epochs - 1):
             # 测试模型
@@ -548,7 +546,7 @@ def main():
     parser.add_argument('--strategy', type=str, default='uncertaintymixup', 
                         choices=augmentation_methods,
                         help='训练策略')
-    parser.add_argument('--dataset', type=str, default='chestct', choices=['chestct', 'breakhis', 'padufes'],
+    parser.add_argument('--dataset', type=str, default='chestct', choices=['chestct', 'breakhis', 'padufes','kvasir','bladder'],
                         help='数据集类型')
     parser.add_argument('--magnification', type=str, default=None, choices=['40', '100', '200', '400', None],
                         help='BreakHis数据集的放大倍数，None表示使用所有倍数')
@@ -594,16 +592,15 @@ def main():
             # 根据数据集类型设置数据目录和类别数
             if args.dataset == 'breakhis':
                 args.data_dir = '/workspace/MedicalImageClassficationData/BreakHis'
-                num_classes = get_num_classes('breakhis')
             elif args.dataset == 'chestct':
                 args.data_dir = '/workspace/MedicalImageClassficationData/chest-ctscan-images_datasets'
-                num_classes = get_num_classes('chestct')
             elif args.dataset == 'padufes':
                 args.data_dir = '/workspace/MedicalImageClassficationData/PAD-UFES-20'
-                num_classes = get_num_classes('padufes')
-            elif args.dataset == 'bladdertissue':
+            elif args.dataset == 'bladder':
                 args.data_dir = '/workspace/MedicalImageClassficationData/EndoscopicBladderTissue'
-                num_classes = get_num_classes('bladdertissue')            
+            elif args.dataset == 'kvasir':
+                args.data_dir = '/workspace/MedicalImageClassficationData/kvasir-dataset'
+            num_classes = get_num_classes(args.dataset)            
             
             print(f"Using {args.dataset} dataset")
             print(f"Data directory: {args.data_dir}")
