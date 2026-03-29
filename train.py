@@ -180,7 +180,7 @@ def train_with_mixup(args, model, train_loader, device, optimizer, alpha=1.0):
     all_labels_b = []
     all_lam = []
     
-    for images, labels in train_loader:
+    for images, labels, _ in train_loader:
         images = images.to(device)
         labels = labels.to(device)
         
@@ -243,7 +243,7 @@ def train_with_cutmix(args, dataset_type, epoch, model, train_loader, device, op
     log_filename = f"training_log/training_log_epoch_{epoch}.txt"
     log_file = open(log_filename, 'w')
     log_file.write("epoch\tbatch\tratio\tmixed_label\tloss\n")  # 写入表头
-    for batch_idx, (images, labels) in enumerate(train_loader):
+    for batch_idx, (images, labels, _) in enumerate(train_loader):
         images = images.to(device)
         labels = labels.to(device)
         
@@ -568,7 +568,7 @@ def main():
     parser.add_argument('--superpixel_nums', type=int, default=100, help='聚类数量')
     parser.add_argument('--random_superpixel', action='store_true')
     parser.add_argument('--trimap_alpha', type=int, default=20, help='trimap生成的alpha参数')
-    parser.add_argument('--trimap_gen', type=str, default='graph', help='trimap生成的方法',choices=['graph', 'stats'])
+    parser.add_argument('--trimap_gen', type=str, default='stats', help='trimap生成的方法',choices=['graph', 'stats'])
     parser.add_argument('--alphalabel', action='store_true', help='标签混合')
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()

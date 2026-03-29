@@ -569,7 +569,7 @@ def main():
     parser.add_argument('--superpixel_nums', type=int, default=100, help='聚类数量')
     parser.add_argument('--random_superpixel', action='store_true')
     parser.add_argument('--trimap_alpha', type=int, default=20, help='trimap生成的alpha参数')
-    parser.add_argument('--trimap_gen', type=str, default='graph', help='trimap生成的方法',choices=['graph', 'stats'])
+    parser.add_argument('--trimap_gen', type=str, default='stats', help='trimap生成的方法',choices=['graph', 'stats'])
     parser.add_argument('--alphalabel', action='store_true', help='标签混合')
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()

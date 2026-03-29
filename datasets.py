@@ -203,8 +203,6 @@ def get_dataloaders(data_dir,
                 # 检查文件是否实际存在于目录中
                 if os.path.exists(file_path):
                     mapping[file_path] = (file_path, class_idx)
-                else:
-                    logging.warning(f"File not found: {file_path}")
             return mapping
         
         # 为每个数据集创建样本列表
