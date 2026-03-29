@@ -446,9 +446,9 @@ def train_model(args, model, train_loader, test_loader, criterion, optimizer, nu
             writer.add_scalar('F1-score/Test', test_f1, epoch)
             
             # 保存最佳模型
-            if test_acc > best_test_acc:
-                best_test_acc = test_acc
-                torch.save(model.state_dict(), f'best_model_{strategy}_{dataset_type}.pth')
+            # if test_acc > best_test_acc:
+            #     best_test_acc = test_acc
+            #     torch.save(model.state_dict(), f'best_model_{strategy}_{dataset_type}.pth')
             
             print(f'Epoch [{epoch+1}/{num_epochs}] - Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}')
     
