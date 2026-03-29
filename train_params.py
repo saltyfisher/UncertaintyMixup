@@ -578,7 +578,7 @@ def main():
     # 存储每次实验的结果
     trial_results = []
     # all_superpixel_nums = [100, 200, 500, 1000]
-    all_superpixel_nums = [10, 20, 50]
+    all_superpixel_nums = [10, 20, 50, 100, 500, 1000]
     all_trimap_alpha = [10, 20, 40, 80]
     args.random_superpixel = True
     for superpixel_nums in all_superpixel_nums:
