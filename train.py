@@ -766,10 +766,15 @@ def main():
         # 使用save_experiment_results函数保存结果
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if args.dataset == 'breakhis':
-            filename = f"{args.model}_{args.strategy}_{args.dataset}_{args.magnification}"
+            filename = f"{args.model}_{args.dataset}_{args.strategy}_{args.magnification}"
         else:    
             filename = f"{args.model}_{args.strategy}_{args.dataset}"
-        filename += f"_{args.trimap_gen}_{args.superpixel_nums}_{args.trimap_alpha}"
+        if args.superpixel:
+            filename += f"_sp{args.superpixel_nums}"
+        if args.alphalabel:
+            filename += "_al{args.trimap_alpha}"
+        if args.matting:
+            filename += "_{args.trimap_gen}"
         if args.random_superpixel:
             filename += "_rs"
         
