@@ -153,23 +153,32 @@ def get_dataloaders(data_dir,
     else:  # chestct and others
         resize_size = (224, 224)
 
-    if resize:
-        train_transform = transforms.Compose([
+    train_transform = transforms.Compose([
             transforms.Resize(resize_size),
             transforms.ToTensor(),
         ])
         
-        test_transform = transforms.Compose([
-                transforms.Resize(resize_size),
-                transforms.ToTensor(),
-            ])
-    else:
-        train_transform = transforms.Compose([
+    test_transform = transforms.Compose([
+            transforms.Resize(resize_size),
             transforms.ToTensor(),
         ])
-        test_transform = transforms.Compose([
-            transforms.ToTensor(),
-        ])
+    # if resize:
+    #     train_transform = transforms.Compose([
+    #         transforms.Resize(resize_size),
+    #         transforms.ToTensor(),
+    #     ])
+        
+    #     test_transform = transforms.Compose([
+    #             transforms.Resize(resize_size),
+    #             transforms.ToTensor(),
+    #         ])
+    # else:
+    #     train_transform = transforms.Compose([
+    #         transforms.ToTensor(),
+    #     ])
+    #     test_transform = transforms.Compose([
+    #         transforms.ToTensor(),
+    #     ])
 
     if 'bladder' in dataset_type:
         # 加载 annotations.csv 文件
@@ -306,6 +315,6 @@ def get_dataloaders(data_dir,
             )
             return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
     
-    train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
+    train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
     return train_loader, test_loader
