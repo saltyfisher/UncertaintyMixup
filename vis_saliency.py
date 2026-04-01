@@ -3,8 +3,9 @@ import cv2
 import numpy as np
 import os
 from PIL import Image
-from pytorch_grad_cam import GradCAM, GradCAMPlusPlus, LayerCAM
+from pytorch_grad_cam import GradCAM, GradCAMPlusPlus, LayerCAM, EigenCAM, FinerCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from torchvision import transforms
 from tqdm import tqdm
 import argparse
@@ -188,7 +189,7 @@ def generate_gradcam_heatmaps(
     elif args.dataset_type == 'kvasir':
         args.data_dir = '/workspace/MedicalImageClassficationData/kvasir-dataset'
     # 根据数据集类型获取数据加载器
-    train_loader, test_loader = get_dataloaders(args.data_dir, batch_size, args.dataset_type, magnification)
+    train_loader, test_loader = get_dataloaders(args.data_dir, batch_size, args.dataset_type, magnification, shuffle=False)
 
     print(f"开始生成热力图...")
     if args.dataset_type == 'breakhis':
@@ -200,70 +201,72 @@ def generate_gradcam_heatmaps(
     os.makedirs(output_dir, exist_ok=True)
     # 处理每个批次
     total_samples = 0
-    for batch_idx, (images, labels, paths) in enumerate(tqdm(train_loader, desc="Processing batches")):
-        # 将数据移到设备上
-        images = images.to(device)
-        
-        # 处理批次中的每个样本
-        for i in range(images.size(0)):
-            image_tensor = images[i]
-            label = labels[i]
+    for loader in [train_loader, test_loader]:
+        for batch_idx, (images, labels, paths) in enumerate(tqdm(loader, desc="Processing batches")):
+            # 将数据移到设备上
+            images = images.to(device)
             
-            # 获取图像路径
-            if isinstance(paths, (list, tuple)):
-                path = paths[i] if i < len(paths) else paths[0]
-            else:
-                path = paths
-            
-            # 反归一化图像用于可视化
-            img_denorm = denormalize(image_tensor)
-            
-            # 转换为 numpy 数组
-            original_img_np = img_denorm.permute(1, 2, 0).cpu().numpy()
-            original_img_np = np.clip(original_img_np, 0, 1)
-            
-            # 创建样本特定的输出目录
-            sample_id = batch_idx * batch_size + i
-            
-            sample_output_name = f'sample_{sample_id:06d}'
-            
-            # 存储所有方法的热力图
-            heatmaps = []
-            
-            # 为每种方法生成热力图
-            try:
-                # 生成热力图
-                input_tensor = img_denorm.unsqueeze(0).to(device)
+            # 处理批次中的每个样本
+            for i in range(images.size(0)):
+                image_tensor = images[i]
+                label = labels[i]
+                sample_output_name = paths[0].split('/')[-1].split('.')[0]
+                output_path = os.path.join(
+                            output_dir,
+                            f'{sample_output_name}_{methods}.png'
+                        )
+                if os.path.exists(output_path):
+                    continue
                 
-                if methods == 'gradcam':
-                    cam = GradCAM(model=model, target_layers=[target_layers], reshape_transform=None)
-                elif methods == 'gradcam++':
-                    cam = GradCAMPlusPlus(model=model, target_layers=[target_layers], reshape_transform=None)
-                elif methods == 'layercam':
-                    cam = LayerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+                # 反归一化图像用于可视化
+                img_denorm = denormalize(image_tensor)
                 
-                grayscale_cam = cam(input_tensor=input_tensor)[0, :]
+                # 转换为 numpy 数组
+                original_img_np = img_denorm.permute(1, 2, 0).cpu().numpy()
+                original_img_np = np.clip(original_img_np, 0, 1)
                 
-                # 将热力图叠加到原始图像上
-                heatmap = show_cam_on_image(original_img_np, grayscale_cam, use_rgb=True)
-                heatmaps.append(heatmap)
+                # 创建样本特定的输出目录
+                sample_id = paths[0].split('/')[-1]
                 
-                # 保存单独的热力图
-                if save_individual:
-                    output_path = os.path.join(
-                        output_dir,
-                        f'{sample_output_name}_{methods}.png'
-                    )
-                    heatmap_vis = (heatmap * 255).astype(np.uint8) if heatmap.max() <= 1.0 else heatmap.astype(np.uint8)
-                    cv2.imwrite(output_path, cv2.cvtColor(heatmap_vis, cv2.COLOR_RGB2BGR))
-                    print(f"  已保存 {methods} 热力图到 {output_path}")
-            
-            except Exception as e:
-                print(f"  生成 {methods} 热力图时出错：{e}")
-                import traceback
-                traceback.print_exc()
-            
-            total_samples += 1
+                
+                
+                # 存储所有方法的热力图
+                heatmaps = []
+                
+                # 为每种方法生成热力图
+                try:
+                    # 生成热力图
+                    input_tensor = img_denorm.unsqueeze(0).to(device)
+                    
+                    if methods == 'gradcam':
+                        cam = GradCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+                    elif methods == 'gradcam++':
+                        cam = GradCAMPlusPlus(model=model, target_layers=[target_layers], reshape_transform=None)
+                    elif methods == 'layercam':
+                        cam = LayerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+                    elif methods == 'eigencam':
+                        cam = EigenCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+                    elif methods == 'finercam':
+                        cam = FinerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+                    
+                    grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(label)])[0, :]
+                    
+                    # 将热力图叠加到原始图像上
+                    heatmap = show_cam_on_image(original_img_np, grayscale_cam, use_rgb=True)
+                    heatmaps.append(heatmap)
+                    
+                    # 保存单独的热力图
+                    if save_individual:
+                        heatmap_vis = (heatmap * 255).astype(np.uint8) if heatmap.max() <= 1.0 else heatmap.astype(np.uint8)
+                        cv2.imwrite(output_path, cv2.cvtColor(heatmap_vis, cv2.COLOR_RGB2BGR))
+                        print(f"  已保存 {methods} 热力图到 {output_path}")
+                
+                except Exception as e:
+                    print(f"  生成 {methods} 热力图时出错：{e}")
+                    import traceback
+                    traceback.print_exc()
+                
+                total_samples += 1
     
     print(f"\n热力图生成完毕！共处理 {total_samples} 个样本")
     print(f"结果保存在：{output_dir}")
@@ -297,7 +300,7 @@ if __name__ == "__main__":
                        help='热力图输出目录')
     
     # 方法参数
-    parser.add_argument('--methods', type=str, default='gradcam++', choices=['gradcam', 'gradcam++', 'layercam'],
+    parser.add_argument('--methods', type=str, default='gradcam++', choices=['gradcam', 'gradcam++', 'layercam', 'eigencam', 'finercam'],
                        help='要使用的 Grad-CAM 方法列表')
     parser.add_argument('--save_individual', action='store_true', default=True,
                        help='是否保存单独的热力图')
@@ -316,22 +319,85 @@ if __name__ == "__main__":
     if args.dataset_type == 'breakhis':
         args.model_path += f'_{args.magnification}'
     args.model_path += '.pth'
+    # args.methods = 'layercam'
     magnifications = ['40', '100', '200', '400']
+    # magnifications = ['40']
     datasets = ['chestct', 'breakhis']
-    strategies = ['mixup', 'cutmixrand', 'puzzlemix', 'comix', 'guided']
+    strategies = ['mixup', 'cutmixrand', 'puzzlemix', 'comix', 'guided', 'uncertaintymixup']
+    args.output_dir = os.path.join(args.output_dir, args.methods)
     # 调用主函数
+    args.dataset_type = 'chestct'
     generate_gradcam_heatmaps(
-        args,
-        model_path=args.model_path,
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        dataset_type=args.dataset_type,
-        model_arch=args.model_arch,
-        model_type=args.model_type,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        magnification=args.magnification,
-        methods=args.methods,
-        save_individual=args.save_individual,
-        save_combined=not args.no_save_combined
-    )
+            args,
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            dataset_type=args.dataset_type,
+            model_arch=args.model_arch,
+            model_type=args.model_type,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            magnification=args.magnification,
+            methods=args.methods,
+            save_individual=args.save_individual,
+            save_combined=not args.no_save_combined
+        )
+    
+    for s in strategies:
+        args.strategy = s
+        args.use_augmentation = True
+        generate_gradcam_heatmaps(
+            args,
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            dataset_type=args.dataset_type,
+            model_arch=args.model_arch,
+            model_type=args.model_type,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            magnification=args.magnification,
+            methods=args.methods,
+            save_individual=args.save_individual,
+            save_combined=not args.no_save_combined
+        )
+
+    args.dataset_type = 'breakhis'
+    args.use_augmentation = False
+    for m in magnifications:
+        args.magnification = m
+        generate_gradcam_heatmaps(
+                args,
+                model_path=args.model_path,
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                dataset_type=args.dataset_type,
+                model_arch=args.model_arch,
+                model_type=args.model_type,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                magnification=args.magnification,
+                methods=args.methods,
+                save_individual=args.save_individual,
+                save_combined=not args.no_save_combined
+            )
+    args.use_augmentation = True
+    for m in magnifications:
+        args.magnification = m
+        for s in strategies:
+            args.strategy = s
+            generate_gradcam_heatmaps(
+                args,
+                model_path=args.model_path,
+                data_dir=args.data_dir,
+                output_dir=args.output_dir,
+                dataset_type=args.dataset_type,
+                model_arch=args.model_arch,
+                model_type=args.model_type,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                magnification=args.magnification,
+                methods=args.methods,
+                save_individual=args.save_individual,
+                save_combined=not args.no_save_combined
+            )

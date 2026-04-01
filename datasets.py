@@ -143,7 +143,8 @@ def get_dataloaders(data_dir,
                     validation=False,
                     validation_folds=5,
                     random_state=42,
-                    resize=True):
+                    resize=True,
+                    shuffle=True):
      
     if dataset_type == 'breakhis':
         resize_size = (448, 448)
@@ -162,6 +163,16 @@ def get_dataloaders(data_dir,
             transforms.Resize(resize_size),
             transforms.ToTensor(),
         ])
+    if dataset_type == 'breakhis':
+        data_dir = '/workspace/MedicalImageClassficationData/BreakHis'
+    elif dataset_type == 'chestct':
+        data_dir = '/workspace/MedicalImageClassficationData/chest-ctscan-images_datasets'
+    elif dataset_type == 'padufes':
+        data_dir = '/workspace/MedicalImageClassficationData/PAD-UFES-20'
+    elif dataset_type == 'bladder':
+        data_dir = '/workspace/MedicalImageClassficationData/EndoscopicBladderTissue'
+    elif dataset_type == 'kvasir':
+        data_dir = '/workspace/MedicalImageClassficationData/kvasir-dataset'
     # if resize:
     #     train_transform = transforms.Compose([
     #         transforms.Resize(resize_size),
@@ -246,7 +257,7 @@ def get_dataloaders(data_dir,
         test_dataset = AnnotationDataset(data_dir, test_mapping, test_transform)
         val_dataset = AnnotationDataset(data_dir, val_mapping, test_transform)
         
-        train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
+        train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4, persistent_workers=True)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
         # 如果需要验证集，则使用 annotation.csv 中的 val 划分
@@ -315,6 +326,6 @@ def get_dataloaders(data_dir,
             )
             return full_traintest_dataset, test_dataset, resize_size, train_transform, trainval_datasets, val_datasets
     
-    train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
+    train_loader = DataLoader(traintest_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4, persistent_workers=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
     return train_loader, test_loader

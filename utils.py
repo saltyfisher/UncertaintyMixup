@@ -905,10 +905,10 @@ def find_non_overlapping_position(target_mask, source_mask, resize_size, max_att
     return None
 
 
-def save_mixed_results(images, mixed_images, mixed_pairs, epoch, batch_idx, save_dir, dataset_type='chestct', model=None):
+def save_mixed_results(images, mixed_images, mixed_pairs, epoch, batch_idx, save_dir, dataset_type='chestct', model=None, images_paths=None):
     """保存混合结果的可视化"""
     # 创建保存目录
-    epoch_dir = os.path.join(save_dir, f'epoch_{epoch}')
+    epoch_dir = save_dir
     os.makedirs(epoch_dir, exist_ok=True)
 
     for pair_idx, pair_info in enumerate(mixed_pairs):
@@ -926,23 +926,23 @@ def save_mixed_results(images, mixed_images, mixed_pairs, epoch, batch_idx, save
             source_img = images[source_idx].cpu().numpy().transpose(1, 2, 0)
             target_img = images[target_idx].cpu().numpy().transpose(1, 2, 0)
             mixed_img = mixed_images[target_idx].cpu().numpy().transpose(1, 2, 0)
-            
+            source_img_name = images_paths[source_idx].split('/')[-1].split('.')[0]
             # 反归一化图像
             source_img = denormalize_image(source_img)
             target_img = denormalize_image(target_img)
             mixed_img = denormalize_image(mixed_img)          
             
-            save_function(source_img, epoch_dir, f'batch_{batch_idx}_input_{pair_idx}_source_img.png')
-            save_function(target_img, epoch_dir, f'batch_{batch_idx}_input_{pair_idx}_target_img.png')
-            save_function(mixed_img, epoch_dir, f'batch_{batch_idx}_input_{pair_idx}_mixed_img.png')
-            save_function(mask, epoch_dir, f'batch_{batch_idx}_input_{pair_idx}_mask.png')
+            save_function(source_img, epoch_dir, f'{source_img_name}.png')
+            save_function(target_img, epoch_dir, f'{source_img_name}_target.png')
+            save_function(mixed_img, epoch_dir, f'{source_img_name}_mixed.png')
+            save_function(mask, epoch_dir, f'{source_img_name}_mask.png')
             if trimap is not None:
-                save_function(trimap, epoch_dir, f'batch_{batch_idx}_input_{pair_idx}_trimap.png')
+                save_function(trimap, epoch_dir, f'{source_img_name}_trimap.png')
 
-def save_function(images, name, save_dir):
+def save_function(images, save_dir, name):
     """保存输入图像"""
-    save_path = os.path.join(save_dir, f'{name}.png')
-    plt.imsave(save_path, images, dpi=150, bbox_inches='tight')
+    save_dir = os.path.join(save_dir, name)
+    plt.imsave(save_dir, images, dpi=300)
 
 def calculate_mask_entropy(mask):
     """

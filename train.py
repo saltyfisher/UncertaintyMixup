@@ -44,7 +44,7 @@ def train_with_uncertaintymixup(args, model, train_loader, device, optimizer, ep
     log_file.write("epoch\tbatch\tratio\tmixed_label\tloss\n")  # 写入表头
     
     num_classes = get_num_classes(dataset_type)
-    for batch_idx, (images, labels, _) in enumerate(train_loader):      
+    for batch_idx, (images, labels, images_paths) in enumerate(train_loader):      
         images = images.to(device)
         labels = labels.to(device)
         
@@ -92,7 +92,7 @@ def train_with_uncertaintymixup(args, model, train_loader, device, optimizer, ep
         # 保存混合结果（仅在需要保存的epoch）
         if save_dir is not None:
             save_mixed_results(images, mixed_images, mixed_pairs, 
-                             epoch, batch_idx, save_dir, dataset_type, model)
+                             epoch, batch_idx, save_dir, dataset_type, model, images_paths)
         
         # 重新确保模型回到正常的训练模式（不带dropout）
         model.train()
@@ -306,7 +306,18 @@ def train_model(args, model, train_loader, test_loader, criterion, optimizer, nu
     # 创建混合结果保存目录（仅在需要保存时创建）
     mixed_results_dir = None
     if save_mixed_results:
-        mixed_results_dir = f"mixed_results/{strategy}_{args.superpixel_nums}_{args.trimap_alpha}_{timestamp}"
+        mixed_results_dir = "vis_results/mixed_results/"
+        mixed_results_dir += f"{args.dataset}"
+        if args.dataset == 'breakhis':
+            mixed_results_dir += f"{args.magnification}"
+        if args.uncertaintymixup:
+            mixed_results_dir += f"_uncertaintymixup"
+            if args.matting:
+                mixed_results_dir += f"_matting"
+            if args.superpixel:
+                mixed_results_dir += f"_sp{args.superpixel_nums}"
+            if args.alphalabel:
+                mixed_results_dir += f"_al{args.trimap_alpha}"
         os.makedirs(mixed_results_dir, exist_ok=True)
     
     best_test_acc = 0.0
@@ -317,7 +328,7 @@ def train_model(args, model, train_loader, test_loader, criterion, optimizer, nu
     
     for epoch in range(num_epochs):
         save_dir = None
-        if save_mixed_results and ((epoch + 1) % 20 == 0 or epoch == 0 or epoch == num_epochs - 1):
+        if save_mixed_results and (epoch == num_epochs - 1):
             save_dir = mixed_results_dir
             # 确保目录存在
             if save_dir:
@@ -541,7 +552,7 @@ def main():
     parser.add_argument('--superpixel', action='store_true', help='聚类')
     parser.add_argument('--superpixel_nums', type=int, default=100, help='聚类数量')
     parser.add_argument('--random_superpixel', action='store_true')
-    parser.add_argument('--trimap_alpha', type=int, default=20, help='trimap生成的alpha参数')
+    parser.add_argument('--trimap_alpha', type=int, default=10, help='trimap生成的alpha参数')
     parser.add_argument('--trimap_gen', type=str, default='stats', help='trimap生成的方法',choices=['graph', 'stats'])
     parser.add_argument('--alphalabel', action='store_true', help='标签混合')
     parser.add_argument('--check', action='store_true')
@@ -639,7 +650,7 @@ def main():
         print(f"Dataset: {args.dataset}")
         print(f"Activation threshold: {args.activation_threshold}")
         print(f"Mean threshold: {args.mean_threshold}")
-        print(f"Save mixed results: {args.save_mixed_results}")
+        print(f"Save mixed results: {args.save_results}")
         print(f"Pretrain: {args.pretrain}")
         print(f"Superpixel: {args.superpixel}")
         print(f"Superpixel Nums: {args.superpixel_nums}")
@@ -652,7 +663,7 @@ def main():
             args, model, train_loader, test_loader, criterion, optimizer, args.num_epochs, device, 
             strategy=args.strategy, dataset_type=args.dataset, 
             activation_threshold=args.activation_threshold, mean_threshold=args.mean_threshold, 
-            save_mixed_results=args.save_mixed_results,
+            save_mixed_results=args.save_results,
             use_guided_filter=args.use_guided_filter,
             guided_radius=args.guided_radius,
             guided_eps=args.guided_eps,
@@ -793,7 +804,7 @@ def main():
             
             # 使用save_experiment_results函数保存结果
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"single_result_{args.model}_{args.strategy}_{args.dataset}_{timestamp}"
+            filename = f"single_result_{args.model}_{args.strategy}_{args.dataset}"
             
             # 保存为JSON格式
             # with open(f"results/{filename}.json", 'w') as f:
