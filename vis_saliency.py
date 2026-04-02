@@ -9,6 +9,7 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from torchvision import transforms
 from tqdm import tqdm
 import argparse
+import matplotlib.pyplot as plt
 
 # 添加当前目录到 Python 路径
 import sys
@@ -32,20 +33,47 @@ def denormalize(image_tensor):
     return image_tensor
 
 
-def visualize_heatmap(model, target_layers, image_tensor, image_path, method='gradcam'):
+def visualize_heatmap_with_labels(
+    model, 
+    target_layers, 
+    image_tensor, 
+    image_path, 
+    label,
+    class_names=None,
+    method='gradcam'
+):
     """
-    使用指定方法生成热力图
+    使用指定方法生成热力图并添加标签信息
     
     Args:
         model: 模型
         target_layers: 目标层
         image_tensor: 输入图像张量
         image_path: 图像保存路径
-        method: 可视化方法 ('gradcam', 'gradcam++', 'layercam')
+        label: 真实标签
+        class_names: 类别名称列表
+        method: 可视化方法 ('gradcam', 'gradcam++', 'layercam', 'eigencam', 'finercam')
     """
     # 将图像张量移到 CPU 并转换为 numpy 数组以进行可视化
     img_np = image_tensor.permute(1, 2, 0).cpu().numpy()
     img_np = np.clip(img_np, 0, 1)
+    
+    # 获取模型预测
+    model.eval()
+    with torch.no_grad():
+        output = model(image_tensor.unsqueeze(0))
+        probabilities = torch.nn.functional.softmax(output, dim=1)
+        _, predicted = torch.max(probabilities, 1)
+        pred_class = predicted.item()
+        pred_confidence = probabilities[0, label].item()
+    
+    # 获取类别名称
+    if class_names is None:
+        true_label_name = f"Class {label}"
+        pred_label_name = f"Class {pred_class}"
+    else:
+        true_label_name = class_names[label] if label < len(class_names) else f"Class {label}"
+        pred_label_name = class_names[pred_class] if pred_class < len(class_names) else f"Class {pred_class}"
     
     # 根据方法选择相应的 CAM 类
     if method == 'gradcam':
@@ -54,23 +82,46 @@ def visualize_heatmap(model, target_layers, image_tensor, image_path, method='gr
         cam = GradCAMPlusPlus(model=model, target_layers=[target_layers], reshape_transform=None)
     elif method == 'layercam':
         cam = LayerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+    elif method == 'eigencam':
+        cam = EigenCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+    elif method == 'finercam':
+        cam = FinerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
     else:
-        raise ValueError("不支持的方法，支持的方法包括：'gradcam', 'gradcam++', 'layercam'")
+        raise ValueError(f"不支持的方法：{method}。支持的方法包括：'gradcam', 'gradcam++', 'layercam', 'eigencam', 'finercam'")
     
     # 计算热力图
     input_tensor = image_tensor.unsqueeze(0)
-    grayscale_cam = cam(input_tensor=input_tensor)[0, :]
+    grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(label)])[0, :]
     
     # 打印调试信息
     print(f"热力图统计信息 - 最小值：{grayscale_cam.min():.6f}, 最大值：{grayscale_cam.max():.6f}, 平均值：{grayscale_cam.mean():.6f}")
     
-    # 将热力图叠加到原始图像上
+    # 创建标题文本
+    title_text = f"True: {true_label_name} | Pred: {pred_label_name} (Conf: {pred_confidence:.3f})"
+    
+    # 使用 matplotlib 创建图形
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    # 显示叠加了热力图的图像
     visualization = show_cam_on_image(img_np, grayscale_cam, use_rgb=True)
+    ax.imshow(visualization)
     
-    # 保存可视化结果
-    cv2.imwrite(image_path, cv2.cvtColor(visualization, cv2.COLOR_RGB2BGR))
+    # 设置标题（包含真实标签、预测标签和置信度）
+    ax.set_title(title_text, fontsize=18, fontweight='bold', pad=20)
     
-    return visualization
+    # 移除坐标轴
+    ax.axis('off')
+    
+    # 调整布局以避免标题被裁剪
+    plt.tight_layout()
+    
+    # 保存图像，使用较高的 DPI 以保证质量
+    plt.savefig(image_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
+    
+    # 关闭图形以释放内存
+    plt.close(fig)
+    
+    return visualization, pred_class, pred_confidence
 
 
 def generate_gradcam_heatmaps(
@@ -125,7 +176,7 @@ def generate_gradcam_heatmaps(
         'padufes': 6
     }
     num_classes = num_classes_map.get(dataset_type, 2)
-    
+
     # 加载模型
     print(f"加载模型：{model_arch}, {model_type}")
     model = get_model(model_type=model_type, pretrain=False, model_arch=model_arch, num_classes=num_classes)
@@ -201,6 +252,17 @@ def generate_gradcam_heatmaps(
     os.makedirs(output_dir, exist_ok=True)
     # 处理每个批次
     total_samples = 0
+    
+    # 定义类别名称映射（用于显示）
+    class_names_dict = {
+        'chestct': ['ADE', 'LARGE', 'NORMAL', 'SQU'],
+        'breakhis': ['ADE', 'DUCT', 'FIBR', 'LOB', 'MUC', 'PAPI', 'PHY', 'TUB'],
+        'bladder': ['Normal', 'Tumor'],
+        'kvasir': ['Esophagitis', 'Barrett', 'Polyp', 'Cancer', 'Ulcerative Colitis', 'Crohn', 'Normal Z-line', 'Normal Pylorus'],
+        'padufes': ['Basal Cell Carcinoma', 'Benign Keratosis', 'Dermatofibroma', 'Melanoma', 'Melanocytic Nevi', 'Vascular Lesion']
+    }
+    class_names = class_names_dict.get(dataset_type, None)
+
     for loader in [train_loader, test_loader]:
         for batch_idx, (images, labels, paths) in enumerate(tqdm(loader, desc="Processing batches")):
             # 将数据移到设备上
@@ -215,8 +277,8 @@ def generate_gradcam_heatmaps(
                             output_dir,
                             f'{sample_output_name}_{methods}.png'
                         )
-                if os.path.exists(output_path):
-                    continue
+                # if os.path.exists(output_path):
+                #     continue
                 
                 # 反归一化图像用于可视化
                 img_denorm = denormalize(image_tensor)
@@ -235,31 +297,17 @@ def generate_gradcam_heatmaps(
                 
                 # 为每种方法生成热力图
                 try:
-                    # 生成热力图
-                    input_tensor = img_denorm.unsqueeze(0).to(device)
-                    
-                    if methods == 'gradcam':
-                        cam = GradCAM(model=model, target_layers=[target_layers], reshape_transform=None)
-                    elif methods == 'gradcam++':
-                        cam = GradCAMPlusPlus(model=model, target_layers=[target_layers], reshape_transform=None)
-                    elif methods == 'layercam':
-                        cam = LayerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
-                    elif methods == 'eigencam':
-                        cam = EigenCAM(model=model, target_layers=[target_layers], reshape_transform=None)
-                    elif methods == 'finercam':
-                        cam = FinerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
-                    
-                    grayscale_cam = cam(input_tensor=input_tensor, targets=[ClassifierOutputTarget(label)])[0, :]
-                    
-                    # 将热力图叠加到原始图像上
-                    heatmap = show_cam_on_image(original_img_np, grayscale_cam, use_rgb=True)
-                    heatmaps.append(heatmap)
-                    
-                    # 保存单独的热力图
-                    if save_individual:
-                        heatmap_vis = (heatmap * 255).astype(np.uint8) if heatmap.max() <= 1.0 else heatmap.astype(np.uint8)
-                        cv2.imwrite(output_path, cv2.cvtColor(heatmap_vis, cv2.COLOR_RGB2BGR))
-                        print(f"  已保存 {methods} 热力图到 {output_path}")
+                    # 调用 visualize_heatmap_with_labels 函数生成带标签的热力图
+                    _, pred_class, pred_confidence = visualize_heatmap_with_labels(
+                        model=model,
+                        target_layers=target_layers,
+                        image_tensor=img_denorm,
+                        image_path=output_path,
+                        label=label.item(),
+                        class_names=class_names,
+                        method=methods
+                    )
+                    print(f"  已保存 {methods} 热力图到 {output_path}")
                 
                 except Exception as e:
                     print(f"  生成 {methods} 热力图时出错：{e}")

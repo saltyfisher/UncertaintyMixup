@@ -91,7 +91,7 @@ def train_with_uncertaintymixup(args, model, train_loader, device, optimizer, ep
         
         # 保存混合结果（仅在需要保存的epoch）
         if save_dir is not None:
-            save_mixed_results(images, mixed_images, mixed_pairs, 
+            save_mixed_results(images, labels, mixed_images, mixed_pairs, 
                              epoch, batch_idx, save_dir, dataset_type, model, images_paths)
         
         # 重新确保模型回到正常的训练模式（不带dropout）
@@ -329,6 +329,7 @@ def train_model(args, model, train_loader, test_loader, criterion, optimizer, nu
     for epoch in range(num_epochs):
         save_dir = None
         if save_mixed_results and (epoch == num_epochs - 1):
+        # if save_mixed_results and (epoch == 0):
             save_dir = mixed_results_dir
             # 确保目录存在
             if save_dir:

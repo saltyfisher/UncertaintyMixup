@@ -3,7 +3,7 @@ import gco
 import numpy as np
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from pytorch_grad_cam import GradCAM, GradCAMPlusPlus, LayerCAM
+from pytorch_grad_cam import GradCAM, GradCAMPlusPlus, LayerCAM, FinerCAM
 from pytorch_grad_cam.utils.image import show_cam_on_image
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import cv2
@@ -905,8 +905,23 @@ def find_non_overlapping_position(target_mask, source_mask, resize_size, max_att
     return None
 
 
-def save_mixed_results(images, mixed_images, mixed_pairs, epoch, batch_idx, save_dir, dataset_type='chestct', model=None, images_paths=None):
-    """保存混合结果的可视化"""
+def save_mixed_results(images, labels, mixed_images, mixed_pairs, epoch, batch_idx, save_dir, dataset_type='chestct', model=None, images_paths=None, model_type=None, model_arch=None):
+    """保存混合结果的可视化
+    
+    Args:
+        images: 原始图像
+        mixed_images: 混合后的图像
+        mixed_pairs: 混合对信息
+        epoch: 当前 epoch
+        batch_idx: 当前 batch 索引
+        save_dir: 保存目录
+        dataset_type: 数据集类型
+        model: 模型（可选）
+        images_paths: 图像路径列表（可选）
+        labels: 标签列表（可选）
+        model_type: 模型类型（可选，默认为 None）
+        model_arch: 模型架构（可选，默认为 None）
+    """
     # 创建保存目录
     epoch_dir = save_dir
     os.makedirs(epoch_dir, exist_ok=True)
@@ -927,22 +942,97 @@ def save_mixed_results(images, mixed_images, mixed_pairs, epoch, batch_idx, save
             target_img = images[target_idx].cpu().numpy().transpose(1, 2, 0)
             mixed_img = mixed_images[target_idx].cpu().numpy().transpose(1, 2, 0)
             source_img_name = images_paths[source_idx].split('/')[-1].split('.')[0]
+            target_img_name = images_paths[target_idx].split('/')[-1].split('.')[0]
             # 反归一化图像
             source_img = denormalize_image(source_img)
             target_img = denormalize_image(target_img)
             mixed_img = denormalize_image(mixed_img)          
             
-            save_function(source_img, epoch_dir, f'{source_img_name}.png')
-            save_function(target_img, epoch_dir, f'{source_img_name}_target.png')
-            save_function(mixed_img, epoch_dir, f'{source_img_name}_mixed.png')
-            save_function(mask, epoch_dir, f'{source_img_name}_mask.png')
+            save_function(source_img, epoch_dir, f'{source_img_name}_target.png')
+            save_function(target_img, epoch_dir, f'{target_img_name}.png')
+            save_function(mixed_img, epoch_dir, f'{target_img_name}_mixed.png')
+            save_function(mask, epoch_dir, f'{target_img_name}_mask.png')
             if trimap is not None:
                 save_function(trimap, epoch_dir, f'{source_img_name}_trimap.png')
+            
+            # 生成 FinerCAM 热力图可视化（仅当模型和标签可用时）
+            if model is not None and labels is not None:
+                # 获取真实标签
+                true_label = labels[pair_idx].item() if isinstance(labels[pair_idx], torch.Tensor) else labels[pair_idx]
+                
+                # 获取类别名称
+                class_names_dict = {
+                    'chestct': ['ADE', 'LARGE', 'NORMAL', 'SQU'],
+                    'breakhis': ['ADE', 'DUCT', 'FIBR', 'LOB', 'MUC', 'PAPI', 'PHY', 'TUB'],
+                    'bladder': ['Normal', 'Tumor'],
+                    'kvasir': ['Esophagitis', 'Barrett', 'Polyp', 'Cancer', 'Ulcerative Colitis', 'Crohn', 'Normal Z-line', 'Normal Pylorus'],
+                    'padufes': ['Basal Cell Carcinoma', 'Benign Keratosis', 'Dermatofibroma', 'Melanoma', 'Melanocytic Nevi', 'Vascular Lesion']
+                }
+                class_names = class_names_dict.get(dataset_type, None)
+                
+                # 获取真实类别名称
+                true_label_name = class_names[true_label] if true_label < len(class_names) else f'Class {true_label}'
+                
+                # 使用混合图像进行预测
+                model.eval()
+                with torch.no_grad():
+                    mixed_input = mixed_images[pair_idx].unsqueeze(0).cuda() if torch.cuda.is_available() else mixed_images[pair_idx].unsqueeze(0)
+                    output = model(mixed_input)
+                    probabilities = torch.nn.functional.softmax(output, dim=1)
+                    _, predicted = torch.max(probabilities, 1)
+                    pred_class = predicted.item()
+                    pred_confidence = probabilities[pair_idx, labels[pair_idx]].item()
+                
+                # 获取预测类别名称
+                pred_label_name = class_names[pred_class] if pred_class < len(class_names) else f'Class {pred_class}'
+                
+                # 生成 FinerCAM 热力图
+                try:
+                    from models_ import get_target_layer
+                    # 使用传入的 model_type 和 model_arch，如果为 None 则使用默认值
+                    if model_type is None:
+                        model_type = 'without_dropout'
+                    if model_arch is None:
+                        model_arch = 'resnet18'
+                    target_layers = get_target_layer(model, model_type, model_arch)
+                    
+                    cam = FinerCAM(model=model, target_layers=[target_layers], reshape_transform=None)
+                    
+                    # 计算热力图
+                    input_tensor = mixed_images[pair_idx].unsqueeze(0).cuda() if torch.cuda.is_available() else mixed_images[pair_idx].unsqueeze(0)
+                    grayscale_cam = cam(input_tensor=input_tensor)[0, :]
+                    
+                    # 将混合图像转换为 [0, 1] 范围用于 show_cam_on_image
+                    mixed_img_normalized = mixed_img.astype(np.float32) / 255.0
+                    
+                    # 叠加热力图
+                    visualization = show_cam_on_image(mixed_img_normalized, grayscale_cam, use_rgb=True)
+                    
+                    # 创建标题
+                    title_text = f'True: {true_label_name} | Pred: {pred_label_name} ({pred_confidence*100:.1f}%)'
+                    
+                    # 使用 matplotlib 保存图像
+                    fig, ax = plt.subplots(figsize=(10, 10))
+                    ax.imshow(visualization)
+                    ax.set_title(title_text, fontsize=18, fontweight='bold', pad=20)
+                    ax.axis('off')
+                    plt.tight_layout()
+                    
+                    # 保存图像
+                    save_path = os.path.join(epoch_dir, f'{source_img_name}_mixed_cam.png')
+                    plt.savefig(save_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
+                    plt.close(fig)
+                    
+                except Exception as e:
+                    print(f"生成 FinerCAM 热力图失败：{e}")
 
 def save_function(images, save_dir, name):
     """保存输入图像"""
     save_dir = os.path.join(save_dir, name)
-    plt.imsave(save_dir, images, dpi=300)
+    if len(images.shape) < 3:
+        plt.imsave(save_dir, images, dpi=300, cmap='gray')
+    else:
+        plt.imsave(save_dir, images, dpi=300)
 
 def calculate_mask_entropy(mask):
     """
