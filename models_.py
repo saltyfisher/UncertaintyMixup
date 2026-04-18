@@ -637,13 +637,13 @@ def get_target_layer(model, model_type='without_dropout', model_arch='resnet18')
             return model.layer4[-1]
     else:
         if model_arch == 'resnet50':
-            return model.resnet50.layer4[-1]
+            return model.layer4[-1]
         elif model_arch == 'resnet34':
-            return model.resnet34.layer4[-1]
+            return model.layer4[-1]
         elif model_arch == 'resnet18':
-            return model.resnet18.layer4[-1]
+            return model.layer4[-1]
         elif model_arch == 'inceptionv3':
-            return model.inception.Mixed_7c
+            return model.Mixed_7c
         elif model_arch == 'wideresnet':
             return model.wide_resnet.layer4[-1]
         elif model_arch.startswith('efficientnet_v2'):

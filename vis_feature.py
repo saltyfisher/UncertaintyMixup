@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import umap
 import seaborn as sns
+import models
 
 # 添加当前目录到 Python 路径
 import sys
@@ -106,11 +107,7 @@ def apply_tsne(features, perplexity=30, n_components=2, learning_rate=200, n_ite
     """
     print(f"应用 t-SNE (perplexity={perplexity}, n_components={n_components})...")
     tsne = TSNE(
-        n_components=n_components,
-        perplexity=perplexity,
-        learning_rate=learning_rate,
-        n_iter=n_iter,
-        random_state=random_state
+        n_components=n_components
     )
     tsne_result = tsne.fit_transform(features)
     print(f"t-SNE 完成，形状：{tsne_result.shape}")
@@ -171,9 +168,8 @@ def plot_embedding(embedding, labels, save_path, title='Embedding Visualization'
         if class_names:
             legend1 = ax.legend(*scatter.legend_elements(), title="Classes")
             ax.add_artist(legend1)
-            # 或者使用类别名称
             handles = [plt.Line2D([0], [0], marker='o', color='w', 
-                                 markerfacecolor=plt.cm.tab10(i)/255., markersize=8) 
+                                 markerfacecolor=plt.cm.tab10(i), markersize=8) 
                       for i in range(len(class_names))]
             ax.legend(handles=handles, labels=class_names, title="Classes", loc='best')
         
@@ -192,8 +188,8 @@ def plot_embedding(embedding, labels, save_path, title='Embedding Visualization'
         if class_names:
             legend1 = ax.legend(*scatter.legend_elements(), title="Classes")
             ax.add_artist(legend1)
-            handles = [plt.Line2D([0], [0], [0], marker='o', color='w', 
-                                 markerfacecolor=plt.cm.tab10(i)/255., markersize=8) 
+            handles = [plt.Line2D([0], [0], marker='o', color='w', 
+                                 markerfacecolor=plt.cm.tab10(i), markersize=8) 
                       for i in range(len(class_names))]
             ax.legend(handles=handles, labels=class_names, title="Classes", loc='best')
         
@@ -264,7 +260,7 @@ def visualize_tsne_umap(
     
     # 加载模型
     print(f"加载模型：{model_arch}, {model_type}")
-    model = get_model(model_type=model_type, pretrain=False, model_arch=model_arch, num_classes=num_classes)
+    model = models.__dict__[model_arch](num_classes=num_classes)
     
     # 加载模型参数
     if os.path.isfile(model_path):
@@ -310,6 +306,18 @@ def visualize_tsne_umap(
         transforms.ToTensor(),
     ])
     
+    # 根据数据集类型设置数据路径
+    if args.dataset_type == 'breakhis':
+        args.data_dir = '/workspace/MedicalImageClassficationData/BreakHis'
+    elif args.dataset_type == 'chestct':
+        args.data_dir = '/workspace/MedicalImageClassficationData/chest-ctscan-images_datasets'
+    elif args.dataset_type == 'padufes':
+        args.data_dir = '/workspace/MedicalImageClassficationData/PAD-UFES-20'
+    elif args.dataset_type == 'bladder':
+        args.data_dir = '/workspace/MedicalImageClassficationData/EndoscopicBladderTissue'
+    elif args.dataset_type == 'kvasir':
+        args.data_dir = '/workspace/MedicalImageClassficationData/kvasir-dataset'
+    
     # 根据数据集类型获取数据加载器
     train_loader, test_loader = get_dataloaders(args.data_dir, batch_size, args.dataset_type, magnification, shuffle=False)
     
@@ -317,15 +325,7 @@ def visualize_tsne_umap(
     print("\n开始提取特征...")
     features, labels, paths = extract_features(model, train_loader, device, layer_name='avgpool')
     print(f"特征提取完成，形状：{features.shape}")
-    
-    # 设置输出目录
-    output_dir = os.path.join(output_dir, args.dataset_type)
-    if args.dataset_type == 'breakhis':
-        output_dir += f'{args.magnification}'
-    if args.use_augmentation:
-        output_dir += f'_{args.strategy}'
-    os.makedirs(output_dir, exist_ok=True)
-    
+       
     # 获取类别名称
     class_names = None
     if hasattr(train_loader.dataset, 'classes'):
@@ -347,21 +347,35 @@ def visualize_tsne_umap(
         tsne_result = apply_tsne(features, **tsne_params)
         
         # 保存 t-SNE 结果
-        tsne_save_path = os.path.join(output_dir, f'tsne_{model_type}_{model_arch}.png')
+        # 设置输出目录 - 参考 vis_saliency.py 的结构
+        save_name = args.dataset_type
+        if args.dataset_type == 'breakhis':
+            save_name += f'_{args.magnification}'
+        if args.use_augmentation:
+            save_name += f'_{args.strategy}'
+        os.makedirs(output_dir, exist_ok=True)
+        tsne_save_path = os.path.join(output_dir, f'{save_name}.png')
+        title_name = args.dataset_type
+        if args.dataset_type == 'breakhis':
+            title_name += f' {args.magnification}'
+        if args.use_augmentation:
+            title_name += f' {args.strategy}'
+        else:
+            title_name += ' Without Augmentation'
         plot_embedding(
             tsne_result, labels, tsne_save_path,
-            title=f't-SNE Visualization - {model_type} ({model_arch})',
+            title=f't-SNE Visualization - {title_name})',
             class_names=class_names
         )
         
         # 保存 t-SNE 数值结果
-        tsne_npz_path = os.path.join(output_dir, f'tsne_{model_type}_{model_arch}.npz')
-        np.savez(tsne_npz_path, 
-                embedding=tsne_result, 
-                labels=labels, 
-                features=features,
-                paths=np.array(paths))
-        print(f"  已保存 t-SNE 数值结果到 {tsne_npz_path}")
+        # tsne_npz_path = os.path.join(output_dir, f'tsne_{model_type}_{model_arch}.npz')
+        # np.savez(tsne_npz_path, 
+        #         embedding=tsne_result, 
+        #         labels=labels, 
+        #         features=features,
+        #         paths=np.array(paths))
+        # print(f"  已保存 t-SNE 数值结果到 {tsne_npz_path}")
     
     # 应用 UMAP
     if args.umap:
@@ -443,20 +457,12 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32, help='批次大小')
     parser.add_argument('--num_workers', type=int, default=4, help='数据加载工作进程数')
     
+    # 批量处理参数
+    parser.add_argument('--batch_process', action='store_true', default=True,
+                       help='是否批量处理所有数据集和策略')
+    
     args = parser.parse_args()
     
-    # 设置模型路径
-    args.model_path = 'best_model'
-    if args.use_augmentation:
-        args.model_path += args.strategy
-    args.model_path += f'_{args.dataset_type}'
-    if args.dataset_type == 'breakhis':
-        args.model_path += f'_{args.magnification}'
-    args.model_path += '.pth'
-    if args.tsne:
-        args.output_dir = os.path.join(args.output_dir, 'tsne')
-    if args.umap:
-        args.output_dir = os.path.join(args.output_dir, 'umap')
     # 设置 t-SNE 和 UMAP 参数
     tsne_params = {
         'perplexity': args.tsne_perplexity,
@@ -474,27 +480,322 @@ if __name__ == "__main__":
         'random_state': 42
     }
     
-    # 调用主函数
-    print(f"\n{'='*60}")
-    print(f"开始 t-SNE 和 UMAP 可视化")
-    print(f"{'='*60}\n")
+    # 定义要处理的数据集和策略
+    magnifications = ['40', '100', '200', '400']
+    strategies = ['mixup', 'cutmixrand', 'puzzlemix', 'comix', 'guided', 'uncertaintymixup']
     
-    visualize_tsne_umap(
-        args,
-        model_path=args.model_path,
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        dataset_type=args.dataset_type,
-        model_arch=args.model_arch,
-        model_type=args.model_type,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        magnification=args.magnification,
-        tsne_params=tsne_params,
-        umap_params=umap_params,
-        save_both=True
-    )
+    # 设置输出目录
+    if args.tsne:
+        base_output_dir = os.path.join(args.output_dir, 'tsne')
+    elif args.umap:
+        base_output_dir = os.path.join(args.output_dir, 'umap')
+    else:
+        base_output_dir = args.output_dir
     
-    print(f"\n{'='*60}")
-    print(f"可视化完成！")
-    print(f"{'='*60}\n")
+    if args.batch_process:
+        print("=" * 80)
+        print("开始批量处理所有数据集和策略的 t-SNE/UMAP 可视化")
+        print("=" * 80)
+        
+        # 处理 chestct 数据集
+        print(f"\n{'='*60}")
+        print(f"处理 ChestCT 数据集")
+        print(f"{'='*60}")
+        
+        # 不带增强的模型
+        args.dataset_type = 'chestct'
+        args.use_augmentation = False
+        args.model_path = 'best_model_chestct.pth'
+        
+        print(f"\n处理无增强模型...")
+        visualize_tsne_umap(
+            args,
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            output_dir=base_output_dir,
+            dataset_type=args.dataset_type,
+            model_arch=args.model_arch,
+            model_type=args.model_type,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            magnification=args.magnification,
+            tsne_params=tsne_params,
+            umap_params=umap_params,
+            save_both=True
+        )
+        
+        # 带增强的各个策略
+        for s in strategies:
+            args.strategy = s
+            args.use_augmentation = True
+            args.model_path = f'best_model_{s}_chestct.pth'
+            
+            print(f"\n处理策略：{s}")
+            visualize_tsne_umap(
+                args,
+                model_path=args.model_path,
+                data_dir=args.data_dir,
+                output_dir=base_output_dir,
+                dataset_type=args.dataset_type,
+                model_arch=args.model_arch,
+                model_type=args.model_type,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                magnification=args.magnification,
+                tsne_params=tsne_params,
+                umap_params=umap_params,
+                save_both=True
+            )
+        
+        # 处理 breakhis 数据集的各个放大倍数
+        for m in magnifications:
+            print(f"\n{'='*60}")
+            print(f"处理 BreakHis {m}x 数据集")
+            print(f"{'='*60}")
+            
+            args.magnification = m
+            args.dataset_type = 'breakhis'
+            
+            # 不带增强的模型
+            args.use_augmentation = False
+            args.model_path = f'best_model_breakhis_{m}.pth'
+            
+            print(f"\n处理无增强模型...")
+            visualize_tsne_umap(
+                args,
+                model_path=args.model_path,
+                data_dir=args.data_dir,
+                output_dir=base_output_dir,
+                dataset_type=args.dataset_type,
+                model_arch=args.model_arch,
+                model_type=args.model_type,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                magnification=args.magnification,
+                tsne_params=tsne_params,
+                umap_params=umap_params,
+                save_both=True
+            )
+            
+            # 带增强的各个策略
+            args.use_augmentation = True
+            for s in strategies:
+                args.strategy = s
+                args.model_path = f'best_model_{s}_breakhis_{m}.pth'
+                
+                print(f"\n处理策略：{s}")
+                visualize_tsne_umap(
+                    args,
+                    model_path=args.model_path,
+                    data_dir=args.data_dir,
+                    output_dir=base_output_dir,
+                    dataset_type=args.dataset_type,
+                    model_arch=args.model_arch,
+                    model_type=args.model_type,
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    magnification=args.magnification,
+                    tsne_params=tsne_params,
+                    umap_params=umap_params,
+                    save_both=True
+                )
+        
+        # 处理 padufes 数据集
+        print(f"\n{'='*60}")
+        print(f"处理 PAD-UFES-20 数据集")
+        print(f"{'='*60}")
+        
+        args.dataset_type = 'padufes'
+        args.magnification = None
+        
+        # 不带增强的模型
+        args.use_augmentation = False
+        args.model_path = 'best_model_padufes.pth'
+        
+        print(f"\n处理无增强模型...")
+        visualize_tsne_umap(
+            args,
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            output_dir=base_output_dir,
+            dataset_type=args.dataset_type,
+            model_arch=args.model_arch,
+            model_type=args.model_type,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            magnification=args.magnification,
+            tsne_params=tsne_params,
+            umap_params=umap_params,
+            save_both=True
+        )
+        
+        # 带增强的各个策略
+        args.use_augmentation = True
+        for s in strategies:
+            args.strategy = s
+            args.model_path = f'best_model_{s}_padufes.pth'
+            
+            print(f"\n处理策略：{s}")
+            visualize_tsne_umap(
+                args,
+                model_path=args.model_path,
+                data_dir=args.data_dir,
+                output_dir=base_output_dir,
+                dataset_type=args.dataset_type,
+                model_arch=args.model_arch,
+                model_type=args.model_type,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                magnification=args.magnification,
+                tsne_params=tsne_params,
+                umap_params=umap_params,
+                save_both=True
+            )
+        
+        # 处理 kvasir 数据集
+        print(f"\n{'='*60}")
+        print(f"处理 Kvasir 数据集")
+        print(f"{'='*60}")
+        
+        args.dataset_type = 'kvasir'
+        args.magnification = None
+        
+        # 不带增强的模型
+        args.use_augmentation = False
+        args.model_path = 'best_model_kvasir.pth'
+        
+        print(f"\n处理无增强模型...")
+        visualize_tsne_umap(
+            args,
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            output_dir=base_output_dir,
+            dataset_type=args.dataset_type,
+            model_arch=args.model_arch,
+            model_type=args.model_type,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            magnification=args.magnification,
+            tsne_params=tsne_params,
+            umap_params=umap_params,
+            save_both=True
+        )
+        
+        # 带增强的各个策略
+        args.use_augmentation = True
+        for s in strategies:
+            args.strategy = s
+            args.model_path = f'best_model_{s}_kvasir.pth'
+            
+            print(f"\n处理策略：{s}")
+            visualize_tsne_umap(
+                args,
+                model_path=args.model_path,
+                data_dir=args.data_dir,
+                output_dir=base_output_dir,
+                dataset_type=args.dataset_type,
+                model_arch=args.model_arch,
+                model_type=args.model_type,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                magnification=args.magnification,
+                tsne_params=tsne_params,
+                umap_params=umap_params,
+                save_both=True
+            )
+        
+        # 处理 bladder 数据集
+        print(f"\n{'='*60}")
+        print(f"处理 Bladder 数据集")
+        print(f"{'='*60}")
+        
+        args.dataset_type = 'bladder'
+        args.magnification = None
+        
+        # 不带增强的模型
+        args.use_augmentation = False
+        args.model_path = 'best_model_bladder.pth'
+        
+        print(f"\n处理无增强模型...")
+        visualize_tsne_umap(
+            args,
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            output_dir=base_output_dir,
+            dataset_type=args.dataset_type,
+            model_arch=args.model_arch,
+            model_type=args.model_type,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            magnification=args.magnification,
+            tsne_params=tsne_params,
+            umap_params=umap_params,
+            save_both=True
+        )
+        
+        # 带增强的各个策略
+        args.use_augmentation = True
+        for s in strategies:
+            args.strategy = s
+            args.model_path = f'best_model_{s}_bladder.pth'
+            
+            print(f"\n处理策略：{s}")
+            visualize_tsne_umap(
+                args,
+                model_path=args.model_path,
+                data_dir=args.data_dir,
+                output_dir=base_output_dir,
+                dataset_type=args.dataset_type,
+                model_arch=args.model_arch,
+                model_type=args.model_type,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                magnification=args.magnification,
+                tsne_params=tsne_params,
+                umap_params=umap_params,
+                save_both=True
+            )
+        
+        print(f"\n{'='*60}")
+        print(f"所有可视化完成！")
+        print(f"{'='*60}\n")
+    else:
+        # 单个处理模式
+        # 设置模型路径
+        args.model_path = 'best_model'
+        if args.use_augmentation:
+            args.model_path += args.strategy
+        args.model_path += f'_{args.dataset_type}'
+        if args.dataset_type == 'breakhis':
+            args.model_path += f'_{args.magnification}'
+        args.model_path += '.pth'
+        
+        if args.tsne:
+            args.output_dir = os.path.join(args.output_dir, 'tsne')
+        if args.umap:
+            args.output_dir = os.path.join(args.output_dir, 'umap')
+        
+        # 调用主函数
+        print(f"\n{'='*60}")
+        print(f"开始 t-SNE 和 UMAP 可视化")
+        print(f"{'='*60}\n")
+        
+        visualize_tsne_umap(
+            args,
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            output_dir=args.output_dir,
+            dataset_type=args.dataset_type,
+            model_arch=args.model_arch,
+            model_type=args.model_type,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            magnification=args.magnification,
+            tsne_params=tsne_params,
+            umap_params=umap_params,
+            save_both=True
+        )
+        
+        print(f"\n{'='*60}")
+        print(f"可视化完成！")
+        print(f"{'='*60}\n")

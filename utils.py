@@ -981,7 +981,7 @@ def save_mixed_results(images, labels, mixed_images, mixed_pairs, epoch, batch_i
                     probabilities = torch.nn.functional.softmax(output, dim=1)
                     _, predicted = torch.max(probabilities, 1)
                     pred_class = predicted.item()
-                    pred_confidence = probabilities[pair_idx, labels[pair_idx]].item()
+                    pred_confidence = probabilities[0, labels[pair_idx]].item()
                 
                 # 获取预测类别名称
                 pred_label_name = class_names[pred_class] if pred_class < len(class_names) else f'Class {pred_class}'
@@ -1009,7 +1009,7 @@ def save_mixed_results(images, labels, mixed_images, mixed_pairs, epoch, batch_i
                     visualization = show_cam_on_image(mixed_img_normalized, grayscale_cam, use_rgb=True)
                     
                     # 创建标题
-                    title_text = f'True: {true_label_name} | Pred: {pred_label_name} ({pred_confidence*100:.1f}%)'
+                    title_text = f'True: {true_label_name} | Pred: {pred_label_name} ({pred_confidence:.3f})'
                     
                     # 使用 matplotlib 保存图像
                     fig, ax = plt.subplots(figsize=(10, 10))

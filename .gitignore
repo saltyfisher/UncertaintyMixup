@@ -11,6 +11,7 @@ runs/
 training_log/
 vis/
 vis_results/
+test/
 
 # 忽略Python缓存
 __pycache__/
