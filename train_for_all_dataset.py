@@ -531,8 +531,8 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='权重衰减系数')
     parser.add_argument('--strategy', type=str, default='uncertaintymixup',
                         help='训练策略')
-    parser.add_argument('--dataset', type=str, default='chestct', choices=['chestct', 'breakhis', 'padufes','kvasir','bladder'],
-                        help='数据集类型')
+    parser.add_argument('--dataset', type=str, default='all', choices=['all', 'chestct', 'breakhis'],
+                        help='数据集类型，使用"all"表示遍历所有数据集')
     parser.add_argument('--magnification', type=str, default=None, choices=['40', '100', '200', '400', None],
                         help='BreakHis数据集的放大倍数，None表示使用所有倍数')
     parser.add_argument('--test_split', type=float, default=0.2, help='BreakHis数据集的测试集比例')
@@ -552,275 +552,325 @@ def main():
     parser.add_argument('--superpixel', action='store_true', help='聚类')
     parser.add_argument('--superpixel_nums', type=int, default=100, help='聚类数量')
     parser.add_argument('--random_superpixel', action='store_true')
-    parser.add_argument('--trimap_alpha', type=int, default=10, help='trimap生成的alpha参数')
+    parser.add_argument('--trimap_alpha', type=int, default=20, help='trimap生成的alpha参数')
     parser.add_argument('--trimap_gen', type=str, default='stats', help='trimap生成的方法',choices=['graph', 'stats'])
     parser.add_argument('--alphalabel', action='store_true', help='标签混合')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--save_results',action='store_true')
     args = parser.parse_args()
     
-    # 存储每次实验的结果
-    trial_results = []
+    # 定义所有数据集配置
+    dataset_configs = []
     
-    # 进行多次独立实验
-    for trial in range(args.num_trials):
-        print(f"\n{'='*50}")
-        print(f"开始第 {trial + 1}/{args.num_trials} 次独立实验")
-        print(f"{'='*50}")
+    if args.dataset == 'all':
+        # 添加非BreakHis数据集（不需要magnification）
+        dataset_configs.extend([
+            {'dataset': 'chestct', 'magnification': None},
+        ])
         
-        # 根据数据集类型设置数据目录和类别数
-        if args.dataset == 'breakhis':
-            args.data_dir = '/workspace/MedicalImageClassficationData/BreakHis'
-        elif args.dataset == 'chestct':
-            args.data_dir = '/workspace/MedicalImageClassficationData/chest-ctscan-images_datasets'
-        elif args.dataset == 'padufes':
-            args.data_dir = '/workspace/MedicalImageClassficationData/PAD-UFES-20'
-        elif args.dataset == 'bladder':
-            args.data_dir = '/workspace/MedicalImageClassficationData/EndoscopicBladderTissue'
-        elif args.dataset == 'kvasir':
-            args.data_dir = '/workspace/MedicalImageClassficationData/kvasir-dataset'
-        num_classes = get_num_classes(args.dataset)            
+        # 添加BreakHis数据集的所有放大倍数组合
+        magnifications = ['40', '100', '200', '400']
+        for mag in magnifications:
+            dataset_configs.append({
+                'dataset': 'breakhis',
+                'magnification': mag
+            })
+    
+    print(f"\n{'='*80}")
+    print(f"总共需要运行 {len(dataset_configs)} 个数据集配置")
+    print(f"{'='*80}")
+    for i, config in enumerate(dataset_configs, 1):
+        mag_str = f" (magnification={config['magnification']})" if config['magnification'] else ""
+        print(f"{i}. {config['dataset']}{mag_str}")
+    print(f"{'='*80}\n")
+    
+    # 遍历所有数据集配置
+    all_experiment_results = {}
+    
+    for config_idx, config in enumerate(dataset_configs, 1):
+        current_dataset = config['dataset']
+        current_magnification = config['magnification']
         
-        print(f"Using {args.dataset} dataset")
-        print(f"Data directory: {args.data_dir}")
-        if args.magnification:
-            print(f"Using magnification: {args.magnification}")
-        if args.dataset == 'breakhis':
-            print(f"Test split: {args.test_split}")
-        print(f"Pretrain: {args.pretrain}")
-        if 'breakhis' in args.dataset:
-            args.resize = False
-        # 设置设备
-        if torch.cuda.is_available():
-            device = torch.device(f"cuda:{args.gpu}")
-            print(f"Using GPU device {args.gpu}")
-        else:
-            device = torch.device("cpu")
-            print("CUDA is not available, using CPU")
-        print(f"Using device: {device}")
-        matting_model = None
+        print(f"\n{'#'*80}")
+        print(f"# 开始处理第 {config_idx}/{len(dataset_configs)} 个配置")
+        print(f"# 数据集: {current_dataset}")
+        if current_magnification:
+            print(f"# 放大倍数: {current_magnification}")
+        print(f"{'#'*80}\n")
+        
+        # 存储当前配置的所有实验结果
+        trial_results = []
+        
+        if current_dataset == 'breakhis':
+            filename = f"{args.model}_{args.strategy}_{current_dataset}_{current_magnification}"
+        else:    
+            filename = f"{args.model}_{args.strategy}_{current_dataset}"
         if args.matting:
-            print(f"Matting: {args.matting}")
-            checkpoint = 'BEST_params_DIM.pth'
-            matting_model = DIMModel()
-            matting_model.load_state_dict(torch.load(checkpoint))
-            matting_model = matting_model.to(device)
-            matting_model.eval()
-
-        # 获取数据加载器
-        if args.check:
-            traintest_dataset,test_dataset,resize_size,transform_train = get_data(args.strategy,args.dataset,args.magnification,'/workspace/MedicalImageClassficationData/')
-
-            train_loader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, persistent_workers=True, num_workers=4)
-            test_loader = DataLoader(test_dataset, batch_size=args.batch_size, persistent_workers=True, shuffle=False, num_workers=4)
-        else:
-            train_loader, test_loader = get_dataloaders(
-                args.data_dir, 
-                batch_size=args.batch_size, 
-                dataset_type=args.dataset,
-                magnification=args.magnification,
-                test_split=args.test_split,
-            )
-        
-        model = models.__dict__[args.model](num_classes=num_classes)
-        # 创建模型
-        # model = get_model(
-        #     model_type='with_dropout',
-        #     pretrain=args.pretrain,
-        #     model_arch=args.model,
-        #     num_classes=get_num_classes(args.dataset),
-        # )
-        print(f"model: {args.model}")
-        # 定义损失函数
-        criterion = nn.CrossEntropyLoss()
-        
-        # 选择优化器
-        if args.optimizer == 'sgd':
-            optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-            print(f"Using SGD optimizer with learning rate {args.lr} and momentum {args.momentum}")
-        else:
-            optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-            print(f"Using Adam optimizer with learning rate {args.lr}")
-        # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epochs)
-        print(f"Pretrain: {args.pretrain}")
-        
-        # 训练模型
-        print("Starting training...")
-        print(f"Training strategy: {args.strategy}")
-        print(f"Dataset: {args.dataset}")
-        print(f"Activation threshold: {args.activation_threshold}")
-        print(f"Mean threshold: {args.mean_threshold}")
-        print(f"Save mixed results: {args.save_results}")
-        print(f"Pretrain: {args.pretrain}")
-        print(f"Superpixel: {args.superpixel}")
-        print(f"Superpixel Nums: {args.superpixel_nums}")
-        print(f"Alpha Label: {args.alphalabel}")
-        print(f"Trimap Alpha: {args.trimap_alpha}")
-        print(f"Trimap Gen:{args.trimap_gen}")
+            filename += f"_{args.trimap_gen}"
+        if args.superpixel:
+            filename += f"_{args.superpixel_nums}"
+        if args.alphalabel:
+            filename += f"_{args.trimap_alpha}"
         if args.random_superpixel:
-            print(f"Random Superpixel: True")
-        model, best_test_acc, best_test_precision, best_test_recall, best_test_f1 = train_model(
-            args, model, train_loader, test_loader, criterion, optimizer, args.num_epochs, device, 
-            strategy=args.strategy, dataset_type=args.dataset, 
-            activation_threshold=args.activation_threshold, mean_threshold=args.mean_threshold, 
-            save_mixed_results=args.save_results,
-            use_guided_filter=args.use_guided_filter,
-            guided_radius=args.guided_radius,
-            guided_eps=args.guided_eps,
-            matting_model=matting_model,
-            uncertaintymixup = args.uncertaintymixup,
-            superpixel=args.superpixel,
-            alphalabel=args.alphalabel,
-        )
-        
-        # 测试模型
-        print("Testing model...")
-        # 使用训练过程中各指标的最佳值而不是最终测试值
-        trial_results.append((best_test_acc, best_test_precision, best_test_recall, best_test_f1))
-        
-        print(f"第 {trial + 1} 次实验的最佳测试结果:")
-        print(f"  准确率: {best_test_acc:.4f}")
-        print(f"  Precision: {best_test_precision:.4f}")
-        print(f"  Recall: {best_test_recall:.4f}")
-        print(f"  F1-score: {best_test_f1:.4f}")
-    
-    # 输出所有实验的统计结果
-    if args.save_results:
-        if args.num_trials > 1:
+            filename += "_rs"
+
+        if os.path.exists(f"results/{filename}.csv"):
+            print(f"{filename}.csv 文件已存在，跳过该配置")
+            continue
+        # 进行多次独立实验
+        for trial in range(args.num_trials):
             print(f"\n{'='*50}")
-            print(f"独立实验统计结果 (共 {args.num_trials} 次实验)")
+            print(f"开始第 {trial + 1}/{args.num_trials} 次独立实验")
             print(f"{'='*50}")
             
-            # 分别提取各项指标
-            accuracies = [result[0] for result in trial_results]
-            precisions = [result[1] for result in trial_results]
-            recalls = [result[2] for result in trial_results]
-            f1_scores = [result[3] for result in trial_results]
+            # 根据数据集类型设置数据目录和类别数
+            if current_dataset == 'breakhis':
+                args.data_dir = '/workspace/MedicalImageClassficationData/BreakHis'
+            elif current_dataset == 'chestct':
+                args.data_dir = '/workspace/MedicalImageClassficationData/chest-ctscan-images_datasets'
+            elif current_dataset == 'padufes':
+                args.data_dir = '/workspace/MedicalImageClassficationData/PAD-UFES-20'
+            elif current_dataset == 'bladder':
+                args.data_dir = '/workspace/MedicalImageClassficationData/EndoscopicBladderTissue'
+            elif current_dataset == 'kvasir':
+                args.data_dir = '/workspace/MedicalImageClassficationData/kvasir-dataset'
+            num_classes = get_num_classes(current_dataset)            
             
-            print(f"准确率: {np.mean(accuracies):.3f}({np.std(accuracies):.3f})")
-            print(f"Precision: {np.mean(precisions):.3f}({np.std(precisions):.3f})")
-            print(f"Recall: {np.mean(recalls):.3f}({np.std(recalls):.3f})")
-            print(f"F1-score: {np.mean(f1_scores):.3f}({np.std(f1_scores):.3f})")
-            
-            print(f"\n详细统计:")
-            print(f"  最高准确率: {np.max(accuracies):.4f}")
-            print(f"  最低准确率: {np.min(accuracies):.4f}")
-            print(f"  准确率方差: {np.var(accuracies):.4f}")
-            
-            print(f"  最高Precision: {np.max(precisions):.4f}")
-            print(f"  最低Precision: {np.min(precisions):.4f}")
-            print(f"  Precision方差: {np.var(precisions):.4f}")
-            
-            print(f"  最高Recall: {np.max(recalls):.4f}")
-            print(f"  最低Recall: {np.min(recalls):.4f}")
-            print(f"  Recall方差: {np.var(recalls):.4f}")
-            
-            print(f"  最高F1-score: {np.max(f1_scores):.4f}")
-            print(f"  最低F1-score: {np.min(f1_scores):.4f}")
-            print(f"  F1-score方差: {np.var(f1_scores):.4f}")
-            
-            print(f"\n所有实验结果:")
-            for i, (acc, prec, rec, f1) in enumerate(trial_results):
-                print(f"  实验 {i+1}: Accuracy={acc:.4f}, Precision={prec:.4f}, Recall={rec:.4f}, F1={f1:.4f}")
-            
-            # 保存统计结果到日志文件
-            trial_stats = {
-                "num_trials": args.num_trials,
-                "mean_accuracy": float(np.mean(accuracies)),
-                "std_accuracy": float(np.std(accuracies)),
-                "mean_precision": float(np.mean(precisions)),
-                "std_precision": float(np.std(precisions)),
-                "mean_recall": float(np.mean(recalls)),
-                "std_recall": float(np.std(recalls)),
-                "mean_f1_score": float(np.mean(f1_scores)),
-                "std_f1_score": float(np.std(f1_scores)),
-                "max_accuracy": float(np.max(accuracies)),
-                "min_accuracy": float(np.min(accuracies)),
-                "var_accuracy": float(np.var(accuracies)),
-                "max_precision": float(np.max(precisions)),
-                "min_precision": float(np.min(precisions)),
-                "var_precision": float(np.var(precisions)),
-                "max_recall": float(np.max(recalls)),
-                "min_recall": float(np.min(recalls)),
-                "var_recall": float(np.var(recalls)),
-                "max_f1_score": float(np.max(f1_scores)),
-                "min_f1_score": float(np.min(f1_scores)),
-                "var_f1_score": float(np.var(f1_scores)),
-                "all_results": [{"accuracy": float(acc), "precision": float(prec), "recall": float(rec), "f1_score": float(f1)} 
-                            for acc, prec, rec, f1 in trial_results]
-            }
-            
-            # 使用save_experiment_results函数保存结果
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            if args.dataset == 'breakhis':
-                filename = f"{args.model}_{args.dataset}_{args.strategy}_{args.magnification}"
-            else:    
-                filename = f"{args.model}_{args.strategy}_{args.dataset}"
-            if args.superpixel:
-                filename += f"_sp{args.superpixel_nums}"
-            if args.alphalabel:
-                filename += "_al{args.trimap_alpha}"
+            print(f"Using {current_dataset} dataset")
+            print(f"Data directory: {args.data_dir}")
+            if current_magnification:
+                print(f"Using magnification: {current_magnification}")
+            if current_dataset == 'breakhis':
+                print(f"Test split: {args.test_split}")
+            print(f"Pretrain: {args.pretrain}")
+            if 'breakhis' in current_dataset:
+                args.resize = False
+            # 设置设备
+            if torch.cuda.is_available():
+                device = torch.device(f"cuda:{args.gpu}")
+                print(f"Using GPU device {args.gpu}")
+            else:
+                device = torch.device("cpu")
+                print("CUDA is not available, using CPU")
+            print(f"Using device: {device}")
+            matting_model = None
             if args.matting:
-                filename += "_{args.trimap_gen}"
+                print(f"Matting: {args.matting}")
+                checkpoint = 'BEST_params_DIM.pth'
+                matting_model = DIMModel()
+                matting_model.load_state_dict(torch.load(checkpoint))
+                matting_model = matting_model.to(device)
+                matting_model.eval()
+
+            # 获取数据加载器
+            if args.check:
+                traintest_dataset,test_dataset,resize_size,transform_train = get_data(args.strategy,current_dataset,current_magnification,'/workspace/MedicalImageClassficationData/')
+
+                train_loader = DataLoader(traintest_dataset, batch_size=args.batch_size, shuffle=True, persistent_workers=True, num_workers=4)
+                test_loader = DataLoader(test_dataset, batch_size=args.batch_size, persistent_workers=True, shuffle=False, num_workers=4)
+            else:
+                train_loader, test_loader = get_dataloaders(
+                    args.data_dir, 
+                    batch_size=args.batch_size, 
+                    dataset_type=current_dataset,
+                    magnification=current_magnification,
+                    test_split=args.test_split,
+                )
+            
+            model = models.__dict__[args.model](num_classes=num_classes)
+            # 创建模型
+            # model = get_model(
+            #     model_type='with_dropout',
+            #     pretrain=args.pretrain,
+            #     model_arch=args.model,
+            #     num_classes=get_num_classes(current_dataset),
+            # )
+            print(f"model: {args.model}")
+            # 定义损失函数
+            criterion = nn.CrossEntropyLoss()
+            
+            # 选择优化器
+            if args.optimizer == 'sgd':
+                optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+                print(f"Using SGD optimizer with learning rate {args.lr} and momentum {args.momentum}")
+            else:
+                optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+                print(f"Using Adam optimizer with learning rate {args.lr}")
+            # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epochs)
+            print(f"Pretrain: {args.pretrain}")
+            
+            # 训练模型
+            print("Starting training...")
+            print(f"Training strategy: {args.strategy}")
+            print(f"Dataset: {current_dataset}")
+            print(f"Activation threshold: {args.activation_threshold}")
+            print(f"Mean threshold: {args.mean_threshold}")
+            print(f"Save mixed results: {args.save_results}")
+            print(f"Pretrain: {args.pretrain}")
+            print(f"Superpixel: {args.superpixel}")
+            print(f"Superpixel Nums: {args.superpixel_nums}")
+            print(f"Alpha Label: {args.alphalabel}")
+            print(f"Trimap Alpha: {args.trimap_alpha}")
+            print(f"Trimap Gen:{args.trimap_gen}")
             if args.random_superpixel:
-                filename += "_rs"
+                print(f"Random Superpixel: True")
+            model, best_test_acc, best_test_precision, best_test_recall, best_test_f1 = train_model(
+                args, model, train_loader, test_loader, criterion, optimizer, args.num_epochs, device, 
+                strategy=args.strategy, dataset_type=current_dataset, 
+                activation_threshold=args.activation_threshold, mean_threshold=args.mean_threshold, 
+                save_mixed_results=args.save_results,
+                use_guided_filter=args.use_guided_filter,
+                guided_radius=args.guided_radius,
+                guided_eps=args.guided_eps,
+                matting_model=matting_model,
+                uncertaintymixup = args.uncertaintymixup,
+                superpixel=args.superpixel,
+                alphalabel=args.alphalabel,
+            )
             
-            # 保存为JSON格式
-            # with open(f"results/{filename}.json", 'w') as f:
-            #     json.dump(trial_stats, f, indent=4)
+            # 测试模型
+            print("Testing model...")
+            # 使用训练过程中各指标的最佳值而不是最终测试值
+            trial_results.append((best_test_acc, best_test_precision, best_test_recall, best_test_f1))
             
-            # 保存为CSV格式
-            with open(f"results/{filename}.csv", 'w') as f:
-                f.write("metric,mean(var),std,min,max,var\n")
-                f.write(f"accuracy,{np.mean(accuracies):.3f}({np.std(accuracies):.3f}),{np.std(accuracies):.4f},{np.min(accuracies):.4f},{np.max(accuracies):.4f},{np.var(accuracies):.4f}\n")
-                f.write(f"precision,{np.mean(precisions):.3f}({np.std(precisions):.3f}),{np.std(precisions):.4f},{np.min(precisions):.4f},{np.max(precisions):.4f},{np.var(precisions):.4f}\n")
-                f.write(f"recall,{np.mean(recalls):.3f}({np.std(recalls):.3f}),{np.std(recalls):.4f},{np.min(recalls):.4f},{np.max(recalls):.4f},{np.var(recalls):.4f}\n")
-                f.write(f"f1_score,{np.mean(f1_scores):.3f}({np.std(f1_scores):.3f}),{np.std(f1_scores):.4f},{np.min(f1_scores):.4f},{np.max(f1_scores):.4f},{np.var(f1_scores):.4f}\n")
-                f.write("\nDetailed results:\n")
-                f.write("trial,accuracy,precision,recall,f1_score\n")
-                for i, (acc, prec, rec, f1) in enumerate(trial_results):
-                    f.write(f"{i+1},{acc:.4f},{prec:.4f},{rec:.4f},{f1:.4f}\n")
-            
-            print(f"\n实验统计结果已保存至:")
-            print(f"  - results/{filename}.json")
-            print(f"  - results/{filename}.csv")
+            print(f"第 {trial + 1} 次实验的最佳测试结果:")
+            print(f"  准确率: {best_test_acc:.4f}")
+            print(f"  Precision: {best_test_precision:.4f}")
+            print(f"  Recall: {best_test_recall:.4f}")
+            print(f"  F1-score: {best_test_f1:.4f}")
         
-        # 如果只进行了一次实验，也输出简单的结果
-        else:
-            accuracy, precision, recall, f1 = trial_results[0]
-            print(f"\n最终测试结果:")
-            print(f"  准确率: {accuracy:.4f}")
-            print(f"  Precision: {precision:.4f}")
-            print(f"  Recall: {recall:.4f}")
-            print(f"  F1-score: {f1:.4f}")
+        # 输出当前配置的所有实验的统计结果
+        if args.save_results:
+            if args.num_trials > 1:
+                print(f"\n{'='*50}")
+                print(f"独立实验统计结果 (共 {args.num_trials} 次实验)")
+                print(f"{'='*50}")
+                
+                # 分别提取各项指标
+                accuracies = [result[0] for result in trial_results]
+                precisions = [result[1] for result in trial_results]
+                recalls = [result[2] for result in trial_results]
+                f1_scores = [result[3] for result in trial_results]
+                
+                print(f"准确率: {np.mean(accuracies):.3f}({np.std(accuracies):.3f})")
+                print(f"Precision: {np.mean(precisions):.3f}({np.std(precisions):.3f})")
+                print(f"Recall: {np.mean(recalls):.3f}({np.std(recalls):.3f})")
+                print(f"F1-score: {np.mean(f1_scores):.3f}({np.std(f1_scores):.3f})")
+                
+                print(f"\n详细统计:")
+                print(f"  最高准确率: {np.max(accuracies):.4f}")
+                print(f"  最低准确率: {np.min(accuracies):.4f}")
+                print(f"  准确率方差: {np.var(accuracies):.4f}")
+                
+                print(f"  最高Precision: {np.max(precisions):.4f}")
+                print(f"  最低Precision: {np.min(precisions):.4f}")
+                print(f"  Precision方差: {np.var(precisions):.4f}")
+                
+                print(f"  最高Recall: {np.max(recalls):.4f}")
+                print(f"  最低Recall: {np.min(recalls):.4f}")
+                print(f"  Recall方差: {np.var(recalls):.4f}")
+                
+                print(f"  最高F1-score: {np.max(f1_scores):.4f}")
+                print(f"  最低F1-score: {np.min(f1_scores):.4f}")
+                print(f"  F1-score方差: {np.var(f1_scores):.4f}")
+                
+                print(f"\n所有实验结果:")
+                for i, (acc, prec, rec, f1) in enumerate(trial_results):
+                    print(f"  实验 {i+1}: Accuracy={acc:.4f}, Precision={prec:.4f}, Recall={rec:.4f}, F1={f1:.4f}")
+                
+                # 保存统计结果到日志文件
+                trial_stats = {
+                    "num_trials": args.num_trials,
+                    "mean_accuracy": float(np.mean(accuracies)),
+                    "std_accuracy": float(np.std(accuracies)),
+                    "mean_precision": float(np.mean(precisions)),
+                    "std_precision": float(np.std(precisions)),
+                    "mean_recall": float(np.mean(recalls)),
+                    "std_recall": float(np.std(recalls)),
+                    "mean_f1_score": float(np.mean(f1_scores)),
+                    "std_f1_score": float(np.std(f1_scores)),
+                    "max_accuracy": float(np.max(accuracies)),
+                    "min_accuracy": float(np.min(accuracies)),
+                    "var_accuracy": float(np.var(accuracies)),
+                    "max_precision": float(np.max(precisions)),
+                    "min_precision": float(np.min(precisions)),
+                    "var_precision": float(np.var(precisions)),
+                    "max_recall": float(np.max(recalls)),
+                    "min_recall": float(np.min(recalls)),
+                    "var_recall": float(np.var(recalls)),
+                    "max_f1_score": float(np.max(f1_scores)),
+                    "min_f1_score": float(np.min(f1_scores)),
+                    "var_f1_score": float(np.var(f1_scores)),
+                    "all_results": [{"accuracy": float(acc), "precision": float(prec), "recall": float(rec), "f1_score": float(f1)} 
+                                for acc, prec, rec, f1 in trial_results]
+                }
+                
+                # 构建文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                
+                # 保存为CSV格式
+                os.makedirs("results", exist_ok=True)
+                with open(f"results/{filename}.csv", 'w') as f:
+                    f.write("metric,mean(var),std,min,max,var\n")
+                    f.write(f"accuracy,{np.mean(accuracies):.3f}({np.std(accuracies):.3f}),{np.std(accuracies):.4f},{np.min(accuracies):.4f},{np.max(accuracies):.4f},{np.var(accuracies):.4f}\n")
+                    f.write(f"precision,{np.mean(precisions):.3f}({np.std(precisions):.3f}),{np.std(precisions):.4f},{np.min(precisions):.4f},{np.max(precisions):.4f},{np.var(precisions):.4f}\n")
+                    f.write(f"recall,{np.mean(recalls):.3f}({np.std(recalls):.3f}),{np.std(recalls):.4f},{np.min(recalls):.4f},{np.max(recalls):.4f},{np.var(recalls):.4f}\n")
+                    f.write(f"f1_score,{np.mean(f1_scores):.3f}({np.std(f1_scores):.3f}),{np.std(f1_scores):.4f},{np.min(f1_scores):.4f},{np.max(f1_scores):.4f},{np.var(f1_scores):.4f}\n")
+                    f.write("\nDetailed results:\n")
+                    f.write("trial,accuracy,precision,recall,f1_score\n")
+                    for i, (acc, prec, rec, f1) in enumerate(trial_results):
+                        f.write(f"{i+1},{acc:.4f},{prec:.4f},{rec:.4f},{f1:.4f}\n")
+                
+                print(f"\n实验统计结果已保存至:")
+                print(f"  - results/{filename}.csv")
+                
+                # 保存到总结果字典
+                config_key = f"{current_dataset}_{current_magnification}" if current_magnification else current_dataset
+                all_experiment_results[config_key] = trial_stats
             
-            # 保存单次实验结果到日志文件
-            single_result = {
-                "accuracy": float(accuracy),
-                "precision": float(precision),
-                "recall": float(recall),
-                "f1_score": float(f1)
-            }
-            
-            # 使用save_experiment_results函数保存结果
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"single_result_{args.model}_{args.strategy}_{args.dataset}"
-            
-            # 保存为JSON格式
-            # with open(f"results/{filename}.json", 'w') as f:
-            #     json.dump(single_result, f, indent=4)
-            
-            # 保存为CSV格式
-            with open(f"results/{filename}.csv", 'w') as f:
-                f.write("metric,value\n")
-                f.write(f"accuracy,{accuracy:.4f}\n")
-                f.write(f"precision,{precision:.4f}\n")
-                f.write(f"recall,{recall:.4f}\n")
-                f.write(f"f1_score,{f1:.4f}\n")
-            
-            print(f"\n实验结果已保存至:")
-            print(f"  - results/{filename}.json")
-            print(f"  - results/{filename}.csv")
+            # 如果只进行了一次实验，也输出简单的结果
+            else:
+                accuracy, precision, recall, f1 = trial_results[0]
+                print(f"\n最终测试结果:")
+                print(f"  准确率: {accuracy:.4f}")
+                print(f"  Precision: {precision:.4f}")
+                print(f"  Recall: {recall:.4f}")
+                print(f"  F1-score: {f1:.4f}")
+                
+                # 构建文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                if current_dataset == 'breakhis':
+                    filename = f"{args.model}_{args.strategy}_{current_dataset}_{current_magnification}"
+                else:    
+                    filename = f"{args.model}_{args.strategy}_{current_dataset}"
+                
+                # 保存为CSV格式
+                os.makedirs("results", exist_ok=True)
+                with open(f"results/{filename}.csv", 'w') as f:
+                    f.write("metric,value\n")
+                    f.write(f"accuracy,{accuracy:.4f}\n")
+                    f.write(f"precision,{precision:.4f}\n")
+                    f.write(f"recall,{recall:.4f}\n")
+                    f.write(f"f1_score,{f1:.4f}\n")
+                
+                print(f"\n实验结果已保存至:")
+                print(f"  - results/{filename}.csv")
+    
+    # 所有配置运行完毕后，输出汇总信息
+    if args.save_results and len(all_experiment_results) > 0:
+        print(f"\n\n{'#'*80}")
+        print(f"# 所有数据集配置训练完成！")
+        print(f"# 总共完成了 {len(all_experiment_results)} 个配置的实验")
+        print(f"{'#'*80}\n")
+        
+        print("实验结果汇总:")
+        for config_key, stats in all_experiment_results.items():
+            print(f"\n{config_key}:")
+            print(f"  Accuracy: {stats['mean_accuracy']:.4f} ± {stats['std_accuracy']:.4f}")
+            print(f"  Precision: {stats['mean_precision']:.4f} ± {stats['std_precision']:.4f}")
+            print(f"  Recall: {stats['mean_recall']:.4f} ± {stats['std_recall']:.4f}")
+            print(f"  F1-score: {stats['mean_f1_score']:.4f} ± {stats['std_f1_score']:.4f}")
 
 
 if __name__ == '__main__':

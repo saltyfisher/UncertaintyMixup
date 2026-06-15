@@ -6,7 +6,6 @@ best_model*.pth
 # 忽略实验结果目录
 heatmaps/
 mixed_results/
-results/
 runs/
 training_log/
 vis/
